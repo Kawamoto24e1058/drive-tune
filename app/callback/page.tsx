@@ -35,6 +35,14 @@ function CallbackContent() {
     exchangeCodeForToken(code, clientId, redirectUri)
       .then((data) => {
         console.log('✅ [OAuth Callback] Token exchanged successfully!');
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('spotify_access_token', data.accessToken);
+          localStorage.setItem('spotify_user_token', data.accessToken);
+          if (data.refreshToken) {
+            localStorage.setItem('spotify_refresh_token', data.refreshToken);
+            localStorage.setItem('spotify_user_refresh_token', data.refreshToken);
+          }
+        }
         console.log('🔑 Stored Access Token:', `${data.accessToken.substring(0, 12)}...`);
         router.push('/');
       })

@@ -170,17 +170,51 @@ const FALLBACK_COVER_URL = "https://images.unsplash.com/photo-1470225620780-dba8
 const SPOTIFY_TOKEN_KEY = "spotify_access_token";
 const SPOTIFY_REFRESH_TOKEN_KEY = "spotify_refresh_token";
 
+const getStoredAccessToken = (): string | null => {
+  if (typeof window === "undefined") return null;
+  return (
+    localStorage.getItem("spotify_access_token") ||
+    localStorage.getItem("spotify_user_token") ||
+    null
+  );
+};
+
+const getStoredRefreshToken = (): string | null => {
+  if (typeof window === "undefined") return null;
+  return (
+    localStorage.getItem("spotify_refresh_token") ||
+    localStorage.getItem("spotify_user_refresh_token") ||
+    null
+  );
+};
+
+const saveStoredTokens = (accessToken: string, refreshToken?: string) => {
+  if (typeof window === "undefined") return;
+  localStorage.setItem("spotify_access_token", accessToken);
+  localStorage.setItem("spotify_user_token", accessToken);
+  if (refreshToken) {
+    localStorage.setItem("spotify_refresh_token", refreshToken);
+    localStorage.setItem("spotify_user_refresh_token", refreshToken);
+  }
+};
+
+const purgeStoredTokens = () => {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem("spotify_access_token");
+  localStorage.removeItem("spotify_user_token");
+  localStorage.removeItem("spotify_refresh_token");
+  localStorage.removeItem("spotify_user_refresh_token");
+};
+
 // 🔑 1. リフレッシュトークンによるアクセストークン自動更新機能 (refreshAccessToken)
 const refreshAccessToken = async (): Promise<string | null> => {
-  const refreshToken = typeof window !== "undefined" ? localStorage.getItem(SPOTIFY_REFRESH_TOKEN_KEY) : null;
+  const refreshToken = getStoredRefreshToken();
   const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "387ae192a82d41e4abb7acf114110694";
 
   if (!refreshToken || !clientId) {
-    console.warn("⚠️ Refresh token or Client ID is missing. Redirecting to login...");
+    console.warn("⚠️ Refresh token or Client ID is missing.");
     if (typeof window !== "undefined") {
-      localStorage.removeItem(SPOTIFY_TOKEN_KEY);
-      localStorage.removeItem(SPOTIFY_REFRESH_TOKEN_KEY);
-      window.location.reload();
+      purgeStoredTokens();
     }
     return null;
   }
@@ -198,35 +232,24 @@ const refreshAccessToken = async (): Promise<string | null> => {
 
     if (response.ok) {
       const data = await response.json();
-      localStorage.setItem(SPOTIFY_TOKEN_KEY, data.access_token);
-      if (data.refresh_token) {
-        localStorage.setItem(SPOTIFY_REFRESH_TOKEN_KEY, data.refresh_token);
-      }
+      saveStoredTokens(data.access_token, data.refresh_token);
       console.log("🔑 [Auth Token] Access token successfully refreshed!");
       return data.access_token;
     } else {
       console.error("Failed to refresh access token, status:", response.status);
-      localStorage.removeItem(SPOTIFY_TOKEN_KEY);
-      localStorage.removeItem(SPOTIFY_REFRESH_TOKEN_KEY);
-      if (typeof window !== "undefined") {
-        window.location.reload();
-      }
+      purgeStoredTokens();
       return null;
     }
   } catch (err) {
     console.error("Error refreshing access token:", err);
-    localStorage.removeItem(SPOTIFY_TOKEN_KEY);
-    localStorage.removeItem(SPOTIFY_REFRESH_TOKEN_KEY);
-    if (typeof window !== "undefined") {
-      window.location.reload();
-    }
+    purgeStoredTokens();
     return null;
   }
 };
 
 // 🛡️ 3. API 通信時の 401 エラーハンドリングラッパー (fetchWithAuth)
 const fetchWithAuth = async (url: string, options: RequestInit = {}): Promise<Response> => {
-  let token = typeof window !== "undefined" ? localStorage.getItem(SPOTIFY_TOKEN_KEY) : null;
+  let token = getStoredAccessToken();
 
   const headers = {
     ...(options.headers || {}),
@@ -326,60 +349,220 @@ const base64encode = (input: ArrayBuffer) => {
 
 const getRedirectUri = () => {
   if (typeof window === "undefined") return "";
-  return window.location.origin.replace(/\/$/, "");
+  const envUri = process.env.NEXT_PUBLIC_SPOTIFY_REDIRECT_URI;
+  if (envUri) {
+    try {
+      const parsed = new URL(envUri);
+      return `${window.location.origin}${parsed.pathname}`;
+    } catch {
+      return envUri;
+    }
+  }
+  return `${window.location.origin}/callback`;
 };
 
-// 🎵 1. 未知の曲 ＋ お気に入り曲のハイブリッド取得 (fetchHybridTrackPool)
-const fetchHybridTrackPool = async (_token?: string): Promise<TrackItem[]> => {
-  try {
-    const favRes = await fetchWithAuth("https://api.spotify.com/v1/me/tracks?limit=20");
+// ⏰ 1. 時間帯ごとの Spotify 音響パラメータ定義 (getTimeBasedParams)
+export interface TimeAudioParams {
+  timeLabel: string;
+  targetEnergy: number;
+  targetValence: number;
+  targetDanceability: number;
+  genres: string[];
+}
 
-    let favTracks: TrackItem[] = [];
+const getTimeBasedDiscoveryConfig = (): TimeAudioParams => {
+  const hour = new Date().getHours();
 
-    if (favRes.ok) {
-      const favData = await favRes.json();
-      if (favData.items && favData.items.length > 0) {
-        favTracks = favData.items.map((item: any) => ({
-          uri: item.track.uri,
-          name: item.track.name,
-          artist: item.track.artists.map((a: any) => a.name).join(", "),
-          artistId: item.track.artists[0]?.id,
-          coverUrl: item.track.album.images[0]?.url || FALLBACK_COVER_URL,
-        }));
-      }
-    }
-
-    let recommendedTracks: TrackItem[] = [];
-    const searchQueries = ["Vaundy", "YOASOBI", "King Gnu", "Fujii Kaze", "Official髭男dism"];
-    const randomArtist = searchQueries[Math.floor(Math.random() * searchQueries.length)];
-
-    console.log(`🔍 [Discovery Search] Fetching recommended tracks for: "${randomArtist}"`);
-    const searchRes = await fetchWithAuth(
-      `https://api.spotify.com/v1/search?q=${encodeURIComponent(randomArtist)}&type=track&limit=15`
-    );
-
-    if (searchRes.ok) {
-      const searchData = await searchRes.json();
-      if (searchData.tracks && searchData.tracks.items?.length > 0) {
-        recommendedTracks = searchData.tracks.items.map((item: any) => ({
-          uri: item.uri,
-          name: item.name,
-          artist: item.artists.map((a: any) => a.name).join(", "),
-          artistId: item.artists[0]?.id,
-          coverUrl: item.album.images[0]?.url || FALLBACK_COVER_URL,
-        }));
-      }
-    }
-
-    const combined = [...favTracks, ...recommendedTracks];
-    console.log(`📻 [Track Pool Created] Total: ${combined.length} tracks (Fav: ${favTracks.length}, Rec: ${recommendedTracks.length})`);
-
-    return combined.length > 0 ? combined.sort(() => Math.random() - 0.5) : SEED_LIBRARY;
-  } catch (err) {
-    console.error("❌ Failed to fetch hybrid track pool:", err);
-    return SEED_LIBRARY;
+  if (hour >= 5 && hour < 10) {
+    return {
+      timeLabel: "Morning Discovery 🌅",
+      genres: ["pop", "j-pop", "acoustic"],
+      targetEnergy: 0.65,
+      targetValence: 0.8,
+      targetDanceability: 0.7,
+    };
+  } else if (hour >= 10 && hour < 17) {
+    return {
+      timeLabel: "Daytime Highway ☀️",
+      genres: ["pop", "rock", "j-pop"],
+      targetEnergy: 0.85,
+      targetValence: 0.75,
+      targetDanceability: 0.8,
+    };
+  } else if (hour >= 17 && hour < 22) {
+    return {
+      timeLabel: "Evening Drive 🌆",
+      genres: ["r-n-b", "chill", "indie"],
+      targetEnergy: 0.55,
+      targetValence: 0.5,
+      targetDanceability: 0.6,
+    };
+  } else {
+    return {
+      timeLabel: "Late Night Lounge 🌙",
+      genres: ["chill", "r-n-b", "acoustic"],
+      targetEnergy: 0.35,
+      targetValence: 0.35,
+      targetDanceability: 0.4,
+    };
   }
 };
+
+const getTimeBasedParams = getTimeBasedDiscoveryConfig;
+
+const shuffleArray = <T,>(array: T[]): T[] => {
+  const arr = [...array];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+};
+
+// 🎵 1. 40:30:30 ハイブリッド選曲ロジック (fetch40_30_30TrackPool)
+const fetch40_30_30TrackPool = async (
+  _token?: string,
+  playedUris: string[] = []
+): Promise<{ pool: TrackItem[]; timeLabel: string }> => {
+  try {
+    const timeConfig = getTimeBasedParams();
+    console.log(`📻 [Radio Engine 40:30:30] Building pool for: ${timeConfig.timeLabel}`);
+
+    // 重複・再生済み排除用ヘルパー
+    const normalizeTracks = (items: any[]): TrackItem[] => {
+      if (!Array.isArray(items)) return [];
+      const result: TrackItem[] = [];
+      for (const item of items) {
+        const t = item.track || item;
+        if (t && t.uri && !playedUris.includes(t.uri)) {
+          result.push({
+            uri: t.uri,
+            name: t.name,
+            artist: t.artists ? t.artists.map((a: any) => a.name).join(", ") : "Unknown Artist",
+            artistId: t.artists && t.artists[0] ? t.artists[0].id : undefined,
+            coverUrl: t.album?.images?.[0]?.url || FALLBACK_COVER_URL,
+          });
+        }
+      }
+      return result;
+    };
+
+    // --- A. 🔥 最近聴いている曲 (40% ➔ 12曲) ---
+    let recentTracks: TrackItem[] = [];
+    const [recentRes, shortTopRes] = await Promise.all([
+      fetchWithAuth("https://api.spotify.com/v1/me/player/recently-played?limit=25"),
+      fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=25"),
+    ]);
+
+    if (recentRes.ok) {
+      recentTracks.push(...normalizeTracks((await recentRes.json()).items || []));
+    }
+    if (shortTopRes.ok) {
+      recentTracks.push(...normalizeTracks((await shortTopRes.json()).items || []));
+    }
+
+    const selectedRecent = shuffleArray(recentTracks).slice(0, 12);
+    const recentArtistIds = selectedRecent.map((t) => t.artistId).filter((id): id is string => Boolean(id));
+
+    // --- B. 🕰️ 昔聴いていた ＋ 同世代ヒット曲 (30% ➔ 9曲) ---
+    let nostalgiaTracks: TrackItem[] = [];
+
+    // B-1. 自分の過去のトップトラック (長期)
+    const longTopRes = await fetchWithAuth(
+      "https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=20"
+    );
+    if (longTopRes.ok) {
+      nostalgiaTracks.push(...normalizeTracks((await longTopRes.json()).items || []));
+    }
+
+    // B-2. 世代のヒット曲 (2010年代〜2020年代前半のJ-POP/トレンド検索)
+    const eraKeywords = ["2010年代 J-POP", "平成ヒット", "青春ソング"];
+    const randomKeyword = eraKeywords[Math.floor(Math.random() * eraKeywords.length)];
+    const eraSearchRes = await fetchWithAuth(
+      `https://api.spotify.com/v1/search?q=${encodeURIComponent(randomKeyword)}&type=track&limit=20`
+    );
+    if (eraSearchRes.ok) {
+      const eraData = await eraSearchRes.json();
+      if (eraData.tracks?.items) {
+        nostalgiaTracks.push(...normalizeTracks(eraData.tracks.items));
+      }
+    }
+
+    const selectedNostalgia = shuffleArray(nostalgiaTracks).slice(0, 9);
+
+    // --- C. ✨ 知らないが好みに合っていそうな曲 (30% ➔ 9曲) ---
+    let tasteMatchedNewTracks: TrackItem[] = [];
+
+    const knownArtistIds = new Set(
+      [...recentTracks, ...nostalgiaTracks].map((t) => t.artistId).filter((id): id is string => Boolean(id))
+    );
+    const knownUris = new Set([...recentTracks, ...nostalgiaTracks].map((t) => t.uri));
+
+    const seedArtist = recentArtistIds[Math.floor(Math.random() * Math.min(5, recentArtistIds.length))] || "";
+
+    const recParams = new URLSearchParams({
+      limit: "30",
+      target_energy: timeConfig.targetEnergy.toString(),
+      target_valence: timeConfig.targetValence.toString(),
+      max_popularity: "65", // 条件を少し緩めてヒット率をアップ
+    });
+
+    if (seedArtist) recParams.append("seed_artists", seedArtist);
+
+    const recRes = await fetchWithAuth(`https://api.spotify.com/v1/recommendations?${recParams.toString()}`);
+
+    if (recRes.ok) {
+      const recData = await recRes.json();
+      const filtered = (recData.tracks || []).filter((t: any) => {
+        const isKnownTrack = knownUris.has(t.uri);
+        const isKnownArtist = t.artists ? t.artists.some((a: any) => knownArtistIds.has(a.id)) : false;
+        return !isKnownTrack && !isKnownArtist;
+      });
+      tasteMatchedNewTracks = normalizeTracks(filtered);
+    }
+
+    // フォールバック: フィルタが厳しすぎて 0 件〜少量だった場合は時間帯ジャンルから補充
+    if (tasteMatchedNewTracks.length < 5) {
+      const randomGenre = timeConfig.genres[Math.floor(Math.random() * timeConfig.genres.length)];
+      const fallbackRes = await fetchWithAuth(
+        `https://api.spotify.com/v1/recommendations?limit=20&seed_genres=${randomGenre}&max_popularity=65`
+      );
+      if (fallbackRes.ok) {
+        const fallbackData = await fallbackRes.json();
+        const fallbackFiltered = (fallbackData.tracks || []).filter((t: any) => !knownUris.has(t.uri));
+        tasteMatchedNewTracks.push(...normalizeTracks(fallbackFiltered));
+      } else {
+        const searchRes = await fetchWithAuth(
+          `https://api.spotify.com/v1/search?q=${encodeURIComponent(randomGenre)}&type=track&limit=20`
+        );
+        if (searchRes.ok) {
+          const searchData = await searchRes.json();
+          const searchFiltered = (searchData.tracks?.items || []).filter((t: any) => !knownUris.has(t.uri));
+          tasteMatchedNewTracks.push(...normalizeTracks(searchFiltered));
+        }
+      }
+    }
+
+    const selectedNew = shuffleArray(tasteMatchedNewTracks).slice(0, 9);
+
+    // --- D. 40:30:30 で統合して最終シャッフル ---
+    const combined = [...selectedRecent, ...selectedNostalgia, ...selectedNew];
+    const finalPool = shuffleArray(combined.length > 0 ? combined : SEED_LIBRARY);
+
+    console.log(
+      `📻 [40:30:30 Engine Result] Total: ${finalPool.length} (Recent: ${selectedRecent.length}, Nostalgia/Era: ${selectedNostalgia.length}, MatchedNew: ${selectedNew.length}) for ${timeConfig.timeLabel}`
+    );
+
+    return { pool: finalPool, timeLabel: timeConfig.timeLabel };
+  } catch (err) {
+    console.error("Failed to build 40:30:30 track pool:", err);
+    return { pool: SEED_LIBRARY, timeLabel: getTimeBasedParams().timeLabel };
+  }
+};
+
+const fetch60_20_20TrackPool = fetch40_30_30TrackPool;
+
+const fetchHybridTrackPool = fetch60_20_20TrackPool;
 
 // 🎵 2. クールダウン（重複・連続再生防止）付き選曲ロジック
 const selectNextTrackWithCooldown = (
@@ -432,14 +615,17 @@ export default function RadioPlayer() {
   const [feedbackLogs, setFeedbackLogs] = useState<FeedbackLog[]>([]);
 
   // 🔁 1. Spotify リピートモードの強制解除 (disableSpotifyRepeat)
-  const disableSpotifyRepeat = async () => {
+  const disableSpotifyRepeat = async (currentDeviceId?: string) => {
+    if (!currentDeviceId) return;
+
     try {
-      await fetchWithAuth("https://api.spotify.com/v1/me/player/repeat?state=off", {
-        method: "PUT",
-      });
+      await fetchWithAuth(
+        `https://api.spotify.com/v1/me/player/repeat?state=off&device_id=${currentDeviceId}`,
+        { method: "PUT" }
+      );
       console.log("📻 [Radio Setup] Repeat mode disabled.");
     } catch (err) {
-      console.warn("Failed to disable repeat mode:", err);
+      console.warn("Notice: Could not set repeat mode, but skipping gracefully:", err);
     }
   };
 
@@ -447,7 +633,7 @@ export default function RadioPlayer() {
   const startPlaybackWithTrack = async (trackUri: string, targetDeviceId: string) => {
     try {
       // リピート設定を OFF にリセット
-      await disableSpotifyRepeat();
+      await disableSpotifyRepeat(targetDeviceId);
 
       // デバイスIDを明示して再生命令を送信
       const res = await fetchWithAuth(`https://api.spotify.com/v1/me/player/play?device_id=${targetDeviceId}`, {
@@ -471,8 +657,90 @@ export default function RadioPlayer() {
 
   // Personalized Hybrid Track Pool & Cooldown History
   const [trackPool, setTrackPool] = useState<TrackItem[]>(SEED_LIBRARY);
+  const [activeTimeLabel, setActiveTimeLabel] = useState<string>("Radio Stream 📻");
   const [historyUris, setHistoryUris] = useState<string[]>([]);
   const [historyArtists, setHistoryArtists] = useState<string[]>([]);
+  const [playedUris, setPlayedUris] = useState<string[]>([]);
+  const [upcomingQueue, setUpcomingQueue] = useState<TrackItem[]>([]);
+  const queuedUrisSetRef = useRef<Set<string>>(new Set());
+  const isFillingQueueRef = useRef(false);
+
+  // 🔄 プール再取得時の呼び出しロジック (refreshPool)
+  const refreshPool = async (customPlayedUris: string[] = playedUris) => {
+    const savedToken = getStoredAccessToken() || token;
+    if (!savedToken) return;
+
+    const { pool: newPool, timeLabel } = await fetch60_20_20TrackPool(savedToken, customPlayedUris);
+    setTrackPool(newPool);
+    setActiveTimeLabel(timeLabel);
+    console.log("📻 [Pool Refreshed 60:20:20] New track pool loaded excluding played URIs.");
+  };
+
+  // 🎵 1. Spotify キュー追加 API 関数 (addToSpotifyQueue)
+  const addToSpotifyQueue = async (trackUri: string, targetDeviceId: string) => {
+    const savedToken = getStoredAccessToken() || token;
+    if (!savedToken || !targetDeviceId) return false;
+
+    try {
+      const res = await fetchWithAuth(
+        `https://api.spotify.com/v1/me/player/queue?uri=${encodeURIComponent(trackUri)}&device_id=${targetDeviceId}`,
+        { method: "POST" }
+      );
+      if (res.ok) {
+        console.log(`📻 [Queue Pre-load] Successfully queued track: ${trackUri}`);
+        return true;
+      }
+    } catch (err) {
+      console.error("Failed to add track to Spotify queue:", err);
+    }
+    return false;
+  };
+
+  // ⚡ 2. 重複禁止 Set 管理付きキュー維持ロジック (maintainUpcomingQueue)
+  const maintainUpcomingQueue = async (currentDeviceId: string) => {
+    if (isFillingQueueRef.current || !currentDeviceId) return;
+    isFillingQueueRef.current = true;
+
+    try {
+      const savedToken = getStoredAccessToken() || token;
+      if (!savedToken) return;
+
+      let pool = [...trackPool];
+
+      // プールが少ない場合は 60:20:20 で補給
+      if (pool.length < 5) {
+        const { pool: newPool } = await fetch60_20_20TrackPool(
+          savedToken,
+          Array.from(queuedUrisSetRef.current)
+        );
+        pool = [...pool, ...newPool];
+        setTrackPool(pool);
+      }
+
+      // 目標: 常に Spotify 側に 3 曲先回りキューを入れる
+      let addedCount = 0;
+      for (const track of pool) {
+        if (addedCount >= 3) break;
+
+        // すでにキューに入れた曲はスキップ
+        if (queuedUrisSetRef.current.has(track.uri)) continue;
+
+        const success = await addToSpotifyQueue(track.uri, currentDeviceId);
+        if (success) {
+          queuedUrisSetRef.current.add(track.uri);
+          addedCount++;
+          console.log(`📻 [Queue Added] (${queuedUrisSetRef.current.size} queued total): ${track.name}`);
+        }
+      }
+
+      // 消費したトラックをプールから除去
+      setTrackPool((prev) => prev.filter((t) => !queuedUrisSetRef.current.has(t.uri)));
+    } catch (err) {
+      console.error("Queue maintenance error:", err);
+    } finally {
+      isFillingQueueRef.current = false;
+    }
+  };
 
   // 📺 画面表示（UI）の 100% 受動同期 (player_state_changed のみで更新)
   const [nowPlaying, setNowPlaying] = useState<NowPlayingState>({
@@ -492,20 +760,22 @@ export default function RadioPlayer() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationFrameIdRef = useRef<number | null>(null);
 
-  // 🛡️ Mount Check for Hydration Guarantee
+  // 🛡️ Mount Check & Access Token Initialization
   useEffect(() => {
     setIsMounted(true);
-  }, []);
 
-  // 🔑 PKCE Code Exchange & Access Token Load
-  useEffect(() => {
-    if (!isMounted) return;
+    const savedToken = getStoredAccessToken();
+    if (savedToken) {
+      setToken(savedToken);
+    }
 
     const urlParams = new URLSearchParams(window.location.search);
     const code = urlParams.get("code");
 
     if (code) {
-      const codeVerifier = localStorage.getItem("spotify_code_verifier");
+      const codeVerifier =
+        localStorage.getItem("spotify_code_verifier") ||
+        localStorage.getItem("drivetuner_code_verifier");
       const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "387ae192a82d41e4abb7acf114110694";
       const redirectUri = getRedirectUri();
 
@@ -525,10 +795,7 @@ export default function RadioPlayer() {
         .then((res) => res.json())
         .then((data) => {
           if (data.access_token) {
-            localStorage.setItem(SPOTIFY_TOKEN_KEY, data.access_token);
-            if (data.refresh_token) {
-              localStorage.setItem(SPOTIFY_REFRESH_TOKEN_KEY, data.refresh_token);
-            }
+            saveStoredTokens(data.access_token, data.refresh_token);
             setToken(data.access_token);
             window.history.replaceState({}, document.title, window.location.pathname);
             console.log("🔑 [Spotify PKCE Auth] Access & Refresh tokens successfully exchanged!");
@@ -539,13 +806,8 @@ export default function RadioPlayer() {
         .catch((err) => {
           console.error("❌ Spotify Token Exchange Error:", err);
         });
-    } else {
-      const savedToken = localStorage.getItem(SPOTIFY_TOKEN_KEY);
-      if (savedToken) {
-        setToken(savedToken);
-      }
     }
-  }, [isMounted]);
+  }, []);
 
   // ⚡ 2. 起動時の前回の曲の自動再生再開 (Resume) ＆ 画面どこでもタップで解禁
   useEffect(() => {
@@ -554,16 +816,17 @@ export default function RadioPlayer() {
     const attemptAutoPlay = async () => {
       if (autoStartedRef.current || !deviceId) return;
 
-      const savedToken = localStorage.getItem(SPOTIFY_TOKEN_KEY) || token;
+      const savedToken = getStoredAccessToken() || token;
       if (!savedToken) return;
 
       autoStartedRef.current = true;
       console.log("📻 [Auto-Radio] 起動。前回のセッションを確認中...");
 
       try {
-        // トラックプールをあらかじめ準備
-        const pool = await fetchHybridTrackPool(savedToken);
+        // 時間帯適応トラックプールをあらかじめ準備
+        const { pool, timeLabel } = await fetchHybridTrackPool(savedToken);
         setTrackPool(pool);
+        setActiveTimeLabel(timeLabel);
 
         if (playerRef.current && typeof playerRef.current.activateElement === "function") {
           await playerRef.current.activateElement();
@@ -642,6 +905,7 @@ export default function RadioPlayer() {
     const codeChallenge = base64encode(hashed);
 
     window.localStorage.setItem("spotify_code_verifier", codeVerifier);
+    window.localStorage.setItem("drivetuner_code_verifier", codeVerifier);
 
     const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "387ae192a82d41e4abb7acf114110694";
     const redirectUri = getRedirectUri();
@@ -693,81 +957,31 @@ export default function RadioPlayer() {
     }
   };
 
-  // ⏭️ 安全なスキップ処理 (handleSkip)
-  const handleSkip = async () => {
+  // ⚡ 手動スキップボタンを押した時だけ明示的に nextTrack() を呼ぶ
+  const handleManualSkip = async () => {
+    if (!playerRef.current) return;
     try {
-      if (nowPlaying && nowPlaying.title && nowPlaying.durationMs > 0) {
-        let playedSec = 0;
-        if (trackStartTimeRef.current) {
-          playedSec = Math.floor((Date.now() - trackStartTimeRef.current) / 1000);
-        } else {
-          playedSec = currentPositionSecRef.current || currentPositionSec;
-        }
-
-        const evalResult = evaluateUserAction(playedSec, nowPlaying.durationMs);
-
-        console.log(`🧠 [AI Feedback Log]
-          曲名: ${nowPlaying.title}
-          実再生時間: ${playedSec}秒
-          判定: ${evalResult.type} (${evalResult.scoreChange > 0 ? "+" : ""}${evalResult.scoreChange}pt)
-        `);
-
-        setFeedbackLogs((prev) => [
-          ...prev,
-          {
-            trackUri: nowPlaying.uri || "",
-            trackName: nowPlaying.title,
-            artistName: nowPlaying.artist,
-            playedSeconds: playedSec,
-            type: evalResult.type,
-            scoreChange: evalResult.scoreChange,
-            timestamp: new Date().toISOString(),
-          },
-        ]);
-      }
-
-      trackStartTimeRef.current = Date.now();
-
-      const savedToken = localStorage.getItem(SPOTIFY_TOKEN_KEY) || token;
-      if (!savedToken || !deviceId) {
-        console.warn("⚠️ [Skip Cancelled] Token or DeviceID is missing.");
-        return;
-      }
-
-      if (playerRef.current && typeof playerRef.current.activateElement === "function") {
-        await playerRef.current.activateElement();
-      }
-
-      // トラックプールから次の曲を選出
-      const histUris = historyUris.length > 0 ? historyUris : feedbackLogs.map((l) => l.trackUri);
-      const histArtists = historyArtists.length > 0 ? historyArtists : feedbackLogs.map((l) => l.artistName);
-
-      const nextTrack = selectNextTrackWithCooldown(trackPool, histUris, histArtists);
-
-      if (nextTrack) {
-        console.log(`📻 [Auto-Radio] Next track selected: ${nextTrack.name} by ${nextTrack.artist}`);
-        setHistoryUris((prev) => [...prev.slice(-20), nextTrack.uri]);
-        setHistoryArtists((prev) => [...prev.slice(-10), nextTrack.artist]);
-        await startPlaybackWithTrack(nextTrack.uri, deviceId);
-        setHasRadioStarted(true);
-        setIsPremiumError(false);
+      console.log("⏭️ [Manual Skip] Triggered by user.");
+      if (typeof playerRef.current.nextTrack === "function") {
+        await playerRef.current.nextTrack();
       } else {
-        console.warn("⚠️ [Track Pool Empty] Re-fetching track pool...");
-        const newPool = await fetchHybridTrackPool(savedToken);
-        setTrackPool(newPool);
-        if (newPool.length > 0) {
-          const first = newPool[0];
-          setHistoryUris((prev) => [...prev.slice(-20), first.uri]);
-          setHistoryArtists((prev) => [...prev.slice(-10), first.artist]);
-          await startPlaybackWithTrack(first.uri, deviceId);
-          setHasRadioStarted(true);
-          setIsPremiumError(false);
-        }
+        await fetchWithAuth("https://api.spotify.com/v1/me/player/next", { method: "POST" });
       }
     } catch (err) {
-      console.error("❌ Failed to skip to next track:", err);
+      console.error("Manual skip error:", err);
     }
   };
+
+  const handleSkip = handleManualSkip;
+
+  // 🎵 現在再生中のトラック ID が変化した時のみ、裏で静かにキューを補充
+  useEffect(() => {
+    const effectiveDeviceId = deviceId || (typeof window !== "undefined" ? (window as any)._lastKnownDeviceId : null);
+    if (nowPlaying?.id && effectiveDeviceId) {
+      console.log(`🎵 [Track Changed] Now playing: ${nowPlaying.title}. Maintaining queue...`);
+      maintainUpcomingQueue(effectiveDeviceId);
+    }
+  }, [nowPlaying?.id, deviceId]);
 
   const handleStartRadio = async () => {
     if (!playerRef.current || !deviceId) {
@@ -776,7 +990,7 @@ export default function RadioPlayer() {
     }
 
     setHasRadioStarted(true);
-    await handleSkip();
+    await handleManualSkip();
   };
 
   // 📺 ⏱️ 経過時間更新 ＆ 画面表示（UI）の 100% 受動同期 (player_state_changed 監視)
@@ -799,13 +1013,25 @@ export default function RadioPlayer() {
       document.body.appendChild(script);
     };
 
-    const initSpotifyPlayer = () => {
+    const initSpotifyPlayer = async () => {
       if (playerRef.current) return;
+
+      let validToken = getStoredAccessToken();
+      if (!validToken) {
+        console.log("🔑 [SDK Pre-Init] Token is missing, attempting pre-refresh...");
+        validToken = await refreshAccessToken();
+      }
+
+      if (!validToken) {
+        console.warn("⚠️ [SDK Pre-Init] No valid token available. Waiting for user login.");
+        setToken(null);
+        return;
+      }
 
       const player = new window.Spotify.Player({
         name: "Drive Tune Web Player",
         getOAuthToken: async (cb: (t: string) => void) => {
-          let currentToken = localStorage.getItem(SPOTIFY_TOKEN_KEY);
+          let currentToken = getStoredAccessToken();
           if (!currentToken) {
             currentToken = await refreshAccessToken();
           }
@@ -820,6 +1046,9 @@ export default function RadioPlayer() {
 
       player.addListener("ready", ({ device_id }: { device_id: string }) => {
         console.log("🟢 [Spotify Web SDK Ready] Device ID:", device_id);
+        if (typeof window !== "undefined") {
+          (window as any)._lastKnownDeviceId = device_id;
+        }
         setDeviceId(device_id);
       });
 
@@ -859,32 +1088,6 @@ export default function RadioPlayer() {
           });
 
           setIsPlaying(!state.paused);
-
-          // ⏭️ 曲完奏時の自動送り判定 (Auto-Skip on Track Completion)
-          const durationSec = Math.floor(state.duration / 1000);
-          const isTrackEnded =
-            (state.paused && (state.position === 0 || state.position >= state.duration - 1500)) ||
-            (state.duration > 0 && state.position >= state.duration - 1000) ||
-            (durationSec > 0 && posSec >= durationSec && state.paused);
-
-          if (isTrackEnded) {
-            if (!isHandlingEndRef.current) {
-              isHandlingEndRef.current = true;
-              console.log("📻 [Auto-Radio] 曲の完奏を検知。次のトラックへ自動移行します...");
-
-              (async () => {
-                try {
-                  await handleSkip();
-                } catch (e) {
-                  console.error("Auto skip execution failed:", e);
-                } finally {
-                  setTimeout(() => {
-                    isHandlingEndRef.current = false;
-                  }, 2500);
-                }
-              })();
-            }
-          }
         }
       });
 
@@ -892,10 +1095,19 @@ export default function RadioPlayer() {
         console.error("❌ Spotify SDK Init Error:", message);
       });
 
-      player.addListener("authentication_error", ({ message }: any) => {
+      player.addListener("authentication_error", async ({ message }: any) => {
         console.error("❌ Spotify Auth Error (Expired token):", message);
-        localStorage.removeItem(SPOTIFY_TOKEN_KEY);
-        setToken(null);
+        console.log("🔄 Attempting automatic re-authentication due to auth error...");
+
+        const newToken = await refreshAccessToken();
+        if (!newToken) {
+          purgeStoredTokens();
+          setToken(null);
+          setHasRadioStarted(false);
+          if (typeof window !== "undefined") {
+            window.location.reload();
+          }
+        }
       });
 
       player.addListener("account_error", ({ message }: any) => {
@@ -917,44 +1129,7 @@ export default function RadioPlayer() {
     };
   }, [isMounted, token]);
 
-  // ⏱️ 1秒ごとの完奏監視タイマー (Dual Safety Net for Track End)
-  useEffect(() => {
-    if (!isMounted || !hasRadioStarted) return;
 
-    const interval = setInterval(() => {
-      if (!nowPlaying || nowPlaying.durationMs <= 0) return;
-      const durationSec = Math.floor(nowPlaying.durationMs / 1000);
-
-      let currentSec = 0;
-      if (trackStartTimeRef.current) {
-        currentSec = Math.floor((Date.now() - trackStartTimeRef.current) / 1000);
-      } else {
-        currentSec = currentPositionSecRef.current;
-      }
-
-      // 再生時間が曲の長さ（秒数）に達した場合に自動スキップ発火
-      if (durationSec > 0 && currentSec >= durationSec) {
-        if (!isHandlingEndRef.current) {
-          isHandlingEndRef.current = true;
-          console.log(`📻 [Auto-Radio Timer] 経過時間 (${currentSec}s / ${durationSec}s) が満了しました。次の曲へ自動移行します。`);
-
-          (async () => {
-            try {
-              await handleSkip();
-            } catch (e) {
-              console.error("Auto skip execution failed:", e);
-            } finally {
-              setTimeout(() => {
-                isHandlingEndRef.current = false;
-              }, 2500);
-            }
-          })();
-        }
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [isMounted, hasRadioStarted, nowPlaying]);
 
   // 🎵 Web Audio API AnalyserNode Ref
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -1061,17 +1236,6 @@ export default function RadioPlayer() {
     };
   }, [isMounted, isPlaying, isMuted]);
 
-  // 🛡️ SSR Hydration Guarantee
-  if (!isMounted) {
-    return (
-      <main className="relative w-screen h-screen overflow-hidden bg-black text-white flex items-center justify-center font-sans">
-        <div className="w-24 h-24 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center animate-pulse shadow-[0_0_50px_rgba(16,185,129,0.5)]">
-          <span className="text-4xl text-emerald-400">🎵</span>
-        </div>
-      </main>
-    );
-  }
-
   // 🔑 Sleek Spotify Premium Login Overlay
   if (!token) {
     return (
@@ -1139,6 +1303,12 @@ export default function RadioPlayer() {
 
   return (
     <main className="relative w-screen h-screen overflow-hidden bg-black text-white flex flex-col justify-between items-center py-10 px-6 select-none font-sans">
+      {/* ⏰ Time-Based Radio Mood Badge */}
+      <div className="fixed top-4 left-1/2 -translate-x-1/2 z-40 px-4 py-1.5 bg-black/60 border border-emerald-500/30 text-emerald-300 rounded-full text-xs sm:text-sm font-bold shadow-lg backdrop-blur-md flex items-center gap-2">
+        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+        <span>{activeTimeLabel}</span>
+      </div>
+
       {/* ⚠️ 403 Premium / Device Warning Toast */}
       {isPremiumError && (
         <div className="fixed top-4 z-50 px-6 py-3 bg-rose-500/90 border border-rose-400 text-white rounded-full text-xs sm:text-sm font-bold shadow-2xl backdrop-blur-md animate-bounce">
@@ -1170,7 +1340,7 @@ export default function RadioPlayer() {
 
         {/* ⏭️ スキップボタン */}
         <button
-          onClick={handleSkip}
+          onClick={() => handleSkip()}
           className="flex items-center gap-2.5 px-8 py-3.5 bg-white text-black hover:bg-neutral-200 active:scale-95 transition rounded-full text-sm font-extrabold shadow-2xl cursor-pointer"
         >
           <span>スキップ</span>
