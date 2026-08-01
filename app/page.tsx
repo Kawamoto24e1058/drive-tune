@@ -168,6 +168,88 @@ export const FluidOrganicEqualizer: React.FC<VisualizerProps> = ({ isPlaying }) 
 
 const FALLBACK_COVER_URL = "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=800&auto=format&fit=crop&q=80";
 const SPOTIFY_TOKEN_KEY = "spotify_access_token";
+const SPOTIFY_REFRESH_TOKEN_KEY = "spotify_refresh_token";
+
+// 🔑 1. リフレッシュトークンによるアクセストークン自動更新機能 (refreshAccessToken)
+const refreshAccessToken = async (): Promise<string | null> => {
+  const refreshToken = typeof window !== "undefined" ? localStorage.getItem(SPOTIFY_REFRESH_TOKEN_KEY) : null;
+  const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "387ae192a82d41e4abb7acf114110694";
+
+  if (!refreshToken || !clientId) {
+    console.warn("⚠️ Refresh token or Client ID is missing. Redirecting to login...");
+    if (typeof window !== "undefined") {
+      localStorage.removeItem(SPOTIFY_TOKEN_KEY);
+      localStorage.removeItem(SPOTIFY_REFRESH_TOKEN_KEY);
+      window.location.reload();
+    }
+    return null;
+  }
+
+  try {
+    const response = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: clientId,
+      }),
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      localStorage.setItem(SPOTIFY_TOKEN_KEY, data.access_token);
+      if (data.refresh_token) {
+        localStorage.setItem(SPOTIFY_REFRESH_TOKEN_KEY, data.refresh_token);
+      }
+      console.log("🔑 [Auth Token] Access token successfully refreshed!");
+      return data.access_token;
+    } else {
+      console.error("Failed to refresh access token, status:", response.status);
+      localStorage.removeItem(SPOTIFY_TOKEN_KEY);
+      localStorage.removeItem(SPOTIFY_REFRESH_TOKEN_KEY);
+      if (typeof window !== "undefined") {
+        window.location.reload();
+      }
+      return null;
+    }
+  } catch (err) {
+    console.error("Error refreshing access token:", err);
+    localStorage.removeItem(SPOTIFY_TOKEN_KEY);
+    localStorage.removeItem(SPOTIFY_REFRESH_TOKEN_KEY);
+    if (typeof window !== "undefined") {
+      window.location.reload();
+    }
+    return null;
+  }
+};
+
+// 🛡️ 3. API 通信時の 401 エラーハンドリングラッパー (fetchWithAuth)
+const fetchWithAuth = async (url: string, options: RequestInit = {}): Promise<Response> => {
+  let token = typeof window !== "undefined" ? localStorage.getItem(SPOTIFY_TOKEN_KEY) : null;
+
+  const headers = {
+    ...(options.headers || {}),
+    Authorization: `Bearer ${token}`,
+  };
+
+  let res = await fetch(url, { ...options, headers });
+
+  // 401 Unauthorized（トークン切れ）を検知した場合
+  if (res.status === 401) {
+    console.warn("⚠️ 401 Unauthorized detected. Attempting token refresh...");
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      const retryHeaders = {
+        ...(options.headers || {}),
+        Authorization: `Bearer ${newToken}`,
+      };
+      res = await fetch(url, { ...options, headers: retryHeaders });
+    }
+  }
+
+  return res;
+};
 
 // 👑 Seed Fallback Library
 const SEED_LIBRARY: TrackItem[] = [
@@ -248,18 +330,9 @@ const getRedirectUri = () => {
 };
 
 // 🎵 1. 未知の曲 ＋ お気に入り曲のハイブリッド取得 (fetchHybridTrackPool)
-const fetchHybridTrackPool = async (token: string): Promise<TrackItem[]> => {
+const fetchHybridTrackPool = async (_token?: string): Promise<TrackItem[]> => {
   try {
-    const favRes = await fetch("https://api.spotify.com/v1/me/tracks?limit=20", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (favRes.status === 401 || favRes.status === 403) {
-      console.warn("⚠️ Spotify token expired or missing scope. Clearing token...");
-      localStorage.removeItem(SPOTIFY_TOKEN_KEY);
-      if (typeof window !== "undefined") window.location.reload();
-      return SEED_LIBRARY;
-    }
+    const favRes = await fetchWithAuth("https://api.spotify.com/v1/me/tracks?limit=20");
 
     let favTracks: TrackItem[] = [];
 
@@ -281,9 +354,8 @@ const fetchHybridTrackPool = async (token: string): Promise<TrackItem[]> => {
     const randomArtist = searchQueries[Math.floor(Math.random() * searchQueries.length)];
 
     console.log(`🔍 [Discovery Search] Fetching recommended tracks for: "${randomArtist}"`);
-    const searchRes = await fetch(
-      `https://api.spotify.com/v1/search?q=${encodeURIComponent(randomArtist)}&type=track&limit=15`,
-      { headers: { Authorization: `Bearer ${token}` } }
+    const searchRes = await fetchWithAuth(
+      `https://api.spotify.com/v1/search?q=${encodeURIComponent(randomArtist)}&type=track&limit=15`
     );
 
     if (searchRes.ok) {
@@ -360,11 +432,10 @@ export default function RadioPlayer() {
   const [feedbackLogs, setFeedbackLogs] = useState<FeedbackLog[]>([]);
 
   // 🔁 1. Spotify リピートモードの強制解除 (disableSpotifyRepeat)
-  const disableSpotifyRepeat = async (authToken: string) => {
+  const disableSpotifyRepeat = async () => {
     try {
-      await fetch("https://api.spotify.com/v1/me/player/repeat?state=off", {
+      await fetchWithAuth("https://api.spotify.com/v1/me/player/repeat?state=off", {
         method: "PUT",
-        headers: { Authorization: `Bearer ${authToken}` },
       });
       console.log("📻 [Radio Setup] Repeat mode disabled.");
     } catch (err) {
@@ -374,18 +445,14 @@ export default function RadioPlayer() {
 
   // 2. スキップ時の確実な再生 ＆ リピート回避 (startPlaybackWithTrack)
   const startPlaybackWithTrack = async (trackUri: string, targetDeviceId: string) => {
-    const savedToken = localStorage.getItem(SPOTIFY_TOKEN_KEY) || token;
-    if (!savedToken) return;
-
     try {
       // リピート設定を OFF にリセット
-      await disableSpotifyRepeat(savedToken);
+      await disableSpotifyRepeat();
 
       // デバイスIDを明示して再生命令を送信
-      const res = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${targetDeviceId}`, {
+      const res = await fetchWithAuth(`https://api.spotify.com/v1/me/player/play?device_id=${targetDeviceId}`, {
         method: "PUT",
         headers: {
-          Authorization: `Bearer ${savedToken}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ uris: [trackUri] }),
@@ -459,9 +526,12 @@ export default function RadioPlayer() {
         .then((data) => {
           if (data.access_token) {
             localStorage.setItem(SPOTIFY_TOKEN_KEY, data.access_token);
+            if (data.refresh_token) {
+              localStorage.setItem(SPOTIFY_REFRESH_TOKEN_KEY, data.refresh_token);
+            }
             setToken(data.access_token);
             window.history.replaceState({}, document.title, window.location.pathname);
-            console.log("🔑 [Spotify PKCE Auth] Access token successfully exchanged!");
+            console.log("🔑 [Spotify PKCE Auth] Access & Refresh tokens successfully exchanged!");
           } else {
             console.warn("⚠️ Spotify Token Exchange Failed:", data);
           }
@@ -734,7 +804,15 @@ export default function RadioPlayer() {
 
       const player = new window.Spotify.Player({
         name: "Drive Tune Web Player",
-        getOAuthToken: (cb: (t: string) => void) => cb(token),
+        getOAuthToken: async (cb: (t: string) => void) => {
+          let currentToken = localStorage.getItem(SPOTIFY_TOKEN_KEY);
+          if (!currentToken) {
+            currentToken = await refreshAccessToken();
+          }
+          if (currentToken) {
+            cb(currentToken);
+          }
+        },
         volume: 0.8,
       });
 
