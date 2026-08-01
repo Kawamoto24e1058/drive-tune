@@ -1,623 +1,1056 @@
 "use client";
 
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
-// 🎵 Genre & Track Types
-export type Genre = "pop" | "rock" | "citypop" | "chill" | "acoustic" | "synthwave";
-export type TimeSlotId = "morning" | "daytime" | "evening" | "night";
+// 🎵 Spotify Track Item Definition
+export interface TrackItem {
+  uri: string;
+  name: string;
+  artist: string;
+  artistId?: string;
+  coverUrl: string;
+}
 
-export interface RadioTrack {
-  id: string; // YouTube Video ID
+// 📺 100% Real-Time Spotify Now Playing State
+export interface NowPlayingState {
+  id?: string;
+  uri?: string;
   title: string;
   artist: string;
-  genre: Genre;
   coverUrl: string;
-  lyrics: { time: number; text: string }[];
+  durationMs: number;
+  positionMs: number;
+  isPaused: boolean;
 }
 
-export interface LearningScores {
-  [slot: string]: {
-    [genre in Genre]?: number;
-  };
+// 🧠 Action Feedback Evaluation Types & Definition
+export type FeedbackType = "INSTANT_SKIP" | "MID_SKIP" | "COMPLETED";
+
+export interface FeedbackLog {
+  trackUri: string;
+  trackName: string;
+  artistName: string;
+  playedSeconds: number;
+  type: FeedbackType;
+  scoreChange: number;
+  timestamp: string;
 }
 
-// 🎧 Rich YouTube Track Library Tagged by Genre
-const TRACK_LIBRARY: RadioTrack[] = [
-  // Pop
-  {
-    id: "v8B5C0_mP3s",
-    title: "新宝島",
-    artist: "サカナクション",
-    genre: "pop",
-    coverUrl: "https://img.youtube.com/vi/v8B5C0_mP3s/hqdefault.jpg",
-    lyrics: [
-      { time: 0, text: "（Intro）" },
-      { time: 15, text: "次をとおりすぎた風が 歩道をたたいてゆく" },
-      { time: 24, text: "このまま君を連れてゆくと 丁寧に描くよ" },
-      { time: 40, text: "新宝島へとつづく" },
-    ],
-  },
-  {
-    id: "0aUev8_J0mY",
-    title: "怪獣の花唄",
-    artist: "Vaundy",
-    genre: "pop",
-    coverUrl: "https://img.youtube.com/vi/0aUev8_J0mY/hqdefault.jpg",
-    lyrics: [
-      { time: 0, text: "（Intro）" },
-      { time: 10, text: "思い出すのは君の歌 会話よりも鮮明だ" },
-      { time: 21, text: "どこに行くにも連れていくよ 騒がしい日々の隙間に" },
-      { time: 33, text: "もっと騒げ怪獣の歌" },
-    ],
-  },
-  {
-    id: "7oK9RyfiKMv1y0q0WzW72g",
-    title: "アイドル",
-    artist: "YOASOBI",
-    genre: "pop",
-    coverUrl: "https://img.youtube.com/vi/7oK9RyfiKMv1y0q0WzW72g/hqdefault.jpg",
-    lyrics: [
-      { time: 0, text: "（Intro）" },
-      { time: 12, text: "無敵の笑顔で荒らすメディア 知りたいその秘密オブキュリアス" },
-      { time: 28, text: "究極のアイドル" },
-    ],
-  },
-  // Rock
-  {
-    id: "ony539T074w",
-    title: "SPECIALZ",
-    artist: "King Gnu",
-    genre: "rock",
-    coverUrl: "https://img.youtube.com/vi/ony539T074w/hqdefault.jpg",
-    lyrics: [
-      { time: 0, text: "（Intro）" },
-      { time: 14, text: "U R MY SPECIAL 今夜愚かな宴を始めよう" },
-      { time: 30, text: "混沌を極めた世界で" },
-    ],
-  },
-  {
-    id: "L18d4i5qJjQ",
-    title: "青と夏",
-    artist: "Mrs. GREEN APPLE",
-    genre: "rock",
-    coverUrl: "https://img.youtube.com/vi/L18d4i5qJjQ/hqdefault.jpg",
-    lyrics: [
-      { time: 0, text: "（Intro）" },
-      { time: 15, text: "涼しい風吹く 青空の夏が始まる" },
-      { time: 32, text: "映画じゃない 僕らの夏だ" },
-    ],
-  },
-  {
-    id: "1-69pU-f9vQ",
-    title: "感電",
-    artist: "米津玄師",
-    genre: "rock",
-    coverUrl: "https://img.youtube.com/vi/1-69pU-f9vQ/hqdefault.jpg",
-    lyrics: [
-      { time: 0, text: "（Intro）" },
-      { time: 16, text: "逃げ出したい夜のすきまに 稲妻のようにひらめいた" },
-      { time: 34, text: "たった一瞬の稲妻になれ" },
-    ],
-  },
-  // Citypop
-  {
-    id: "9Gj47G2e1Jc",
-    title: "真夜中のドア / Stay With Me",
-    artist: "松原みき",
-    genre: "citypop",
-    coverUrl: "https://img.youtube.com/vi/9Gj47G2e1Jc/hqdefault.jpg",
-    lyrics: [
-      { time: 0, text: "（Intro）" },
-      { time: 18, text: "To you, yes my love to you" },
-      { time: 26, text: "Stay with me... 真夜中のドアをたたき" },
-      { time: 42, text: "帰らない夜を抱きしめて" },
-    ],
-  },
-  {
-    id: "3bNITQR4480",
-    title: "Plastic Love",
-    artist: "竹内まりや",
-    genre: "citypop",
-    coverUrl: "https://img.youtube.com/vi/3bNITQR4480/hqdefault.jpg",
-    lyrics: [
-      { time: 0, text: "（Intro）" },
-      { time: 20, text: "突然のキスや熱い眼差しで 恋のプログラムを狂わせないで" },
-      { time: 40, text: "I'm just playing games, I know it's plastic love" },
-    ],
-  },
-  // Chill / Acoustic
-  {
-    id: "1A_3q8N4U0k",
-    title: "きらり",
-    artist: "藤井 風",
-    genre: "acoustic",
-    coverUrl: "https://img.youtube.com/vi/1A_3q8N4U0k/hqdefault.jpg",
-    lyrics: [
-      { time: 0, text: "（Intro）" },
-      { time: 12, text: "荒れ狂う季節の中を二人は伸び伸びと進む" },
-      { time: 20, text: "さらりさらり逃げてゆく時に抱かれ" },
-      { time: 28, text: "連れていって 連れていって どこまでも行くよ" },
-    ],
-  },
-  {
-    id: "tJi2Z-o07Kk",
-    title: "ドライフラワー",
-    artist: "優里",
-    genre: "chill",
-    coverUrl: "https://img.youtube.com/vi/tJi2Z-o07Kk/hqdefault.jpg",
-    lyrics: [
-      { time: 0, text: "（Intro）" },
-      { time: 15, text: "きっとお互い様だったね 枯れてゆく色を見つめてた" },
-      { time: 35, text: "色褪せないドライフラワーのように" },
-    ],
-  },
-  // Synthwave / Night
-  {
-    id: "4NRXx6U8ABQ",
-    title: "Blinding Lights",
-    artist: "The Weeknd",
-    genre: "synthwave",
-    coverUrl: "https://img.youtube.com/vi/4NRXx6U8ABQ/hqdefault.jpg",
-    lyrics: [
-      { time: 0, text: "（Intro）" },
-      { time: 16, text: "I've been on my own for long enough" },
-      { time: 30, text: "I can't sleep until I feel your touch" },
-      { time: 45, text: "I'm blinded by the lights!" },
-    ],
-  },
-  {
-    id: "MV_3Dpw-BRY",
-    title: "Nightcall",
-    artist: "Kavinsky",
-    genre: "synthwave",
-    coverUrl: "https://img.youtube.com/vi/MV_3Dpw-BRY/hqdefault.jpg",
-    lyrics: [
-      { time: 0, text: "（Intro）" },
-      { time: 20, text: "I'm giving you a night call to tell you how I feel" },
-      { time: 40, text: "There's something inside you, it's hard to explain" },
-    ],
-  },
-];
-
-const STORAGE_KEY = "drivetuner_learning_scores";
-
-// Default Initial Weight Scores per Time-Slot
-const DEFAULT_SCORES: LearningScores = {
-  morning: { acoustic: 50, pop: 40, chill: 30, citypop: 20, rock: 10, synthwave: 5 },
-  daytime: { pop: 50, rock: 45, citypop: 30, acoustic: 20, chill: 15, synthwave: 5 },
-  evening: { citypop: 50, chill: 40, pop: 30, acoustic: 25, rock: 15, synthwave: 10 },
-  night: { synthwave: 50, chill: 45, citypop: 35, acoustic: 20, rock: 10, pop: 10 },
-};
-
-// Helper: Get Current Time-Slot ID
-function getTimeSlotId(): TimeSlotId {
-  const hour = new Date().getHours();
-  if (hour >= 5 && hour < 10) return "morning";
-  if (hour >= 10 && hour < 17) return "daytime";
-  if (hour >= 17 && hour < 21) return "evening";
-  return "night";
+// 🎨 完全独立型 60fps リアルタイム波形コンポーネント (FluidOrganicEqualizer)
+interface VisualizerProps {
+  isPlaying: boolean;
 }
 
-declare global {
-  interface Window {
-    YT: any;
-    onYouTubeIframeAPIReady: () => void;
-  }
-}
-
-export default function RadioPlayer() {
-  const [learningScores, setLearningScores] = useState<LearningScores>(DEFAULT_SCORES);
-  const [currentSlot, setCurrentSlot] = useState<TimeSlotId>(getTimeSlotId());
-  const [currentTrack, setCurrentTrack] = useState<RadioTrack>(TRACK_LIBRARY[0]);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [isFading, setIsFading] = useState(false);
-  const [hasActivated, setHasActivated] = useState(false);
-
-  const playerRef = useRef<any>(null);
+export const FluidOrganicEqualizer: React.FC<VisualizerProps> = ({ isPlaying }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const animationFrameIdRef = useRef<number | null>(null);
-  const currentVolumeRef = useRef<number>(100);
-  const playbackTimeRef = useRef<number>(0);
-  const listenedOver30sRef = useRef<boolean>(false);
+  const peaksRef = useRef<number[]>([]);
 
-  // Load Saved Learning Scores from localStorage
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        setLearningScores(JSON.parse(saved));
-      }
-    } catch {
-      // Fallback to default
-    }
-
-    const slotTimer = setInterval(() => {
-      setCurrentSlot(getTimeSlotId());
-    }, 300000);
-
-    return () => clearInterval(slotTimer);
-  }, []);
-
-  // Save Learning Scores to localStorage
-  const saveScores = useCallback((updated: LearningScores) => {
-    setLearningScores(updated);
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-    } catch {
-      // Storage full
-    }
-  }, []);
-
-  // Modify Score for Genre in Current Slot
-  const adjustScore = useCallback(
-    (genre: Genre, delta: number) => {
-      const slot = getTimeSlotId();
-      const currentSlotScores = learningScores[slot] || DEFAULT_SCORES[slot];
-      const oldScore = currentSlotScores[genre] ?? 20;
-      const newScore = Math.max(5, Math.min(200, oldScore + delta));
-
-      const updated = {
-        ...learningScores,
-        [slot]: {
-          ...currentSlotScores,
-          [genre]: newScore,
-        },
-      };
-
-      saveScores(updated);
-      console.log(`🧠 AI Engine: Score [${slot}][${genre}]: ${oldScore} -> ${newScore} (${delta >= 0 ? "+" : ""}${delta}pt)`);
-    },
-    [learningScores, saveScores]
-  );
-
-  // Weighted Random Genre & Track Selection
-  const selectNextTrack = useCallback(
-    (excludeTrackId?: string): RadioTrack => {
-      const slot = getTimeSlotId();
-      const scores = learningScores[slot] || DEFAULT_SCORES[slot];
-      const availableGenres: Genre[] = ["pop", "rock", "citypop", "chill", "acoustic", "synthwave"];
-
-      const weights = availableGenres.map((g) => Math.max(5, scores[g] ?? 20));
-      const totalWeight = weights.reduce((acc, w) => acc + w, 0);
-
-      let randomVal = Math.random() * totalWeight;
-      let selectedGenre: Genre = "pop";
-
-      for (let i = 0; i < availableGenres.length; i++) {
-        randomVal -= weights[i];
-        if (randomVal <= 0) {
-          selectedGenre = availableGenres[i];
-          break;
-        }
-      }
-
-      const candidateTracks = TRACK_LIBRARY.filter(
-        (t) => t.genre === selectedGenre && t.id !== excludeTrackId
-      );
-
-      if (candidateTracks.length > 0) {
-        const randomIndex = Math.floor(Math.random() * candidateTracks.length);
-        return candidateTracks[randomIndex];
-      }
-
-      const fallbackTracks = TRACK_LIBRARY.filter((t) => t.id !== excludeTrackId);
-      return fallbackTracks[Math.floor(Math.random() * fallbackTracks.length)] || TRACK_LIBRARY[0];
-    },
-    [learningScores]
-  );
-
-  // 1. YouTube IFrame API Initialization with Strict Unmute & Origin Parameters
-  useEffect(() => {
-    const initialTrack = selectNextTrack();
-    setCurrentTrack(initialTrack);
-
-    const loadYT = () => {
-      if (window.YT && window.YT.Player) {
-        initPlayer(initialTrack.id);
-        return;
-      }
-      const tag = document.createElement("script");
-      tag.src = "https://www.youtube.com/iframe_api";
-      document.body.appendChild(tag);
-      window.onYouTubeIframeAPIReady = () => initPlayer(initialTrack.id);
-    };
-
-    const initPlayer = (videoId: string) => {
-      playerRef.current = new window.YT.Player("yt-hidden-player", {
-        height: "1",
-        width: "1",
-        videoId: videoId,
-        playerVars: {
-          autoplay: 1,
-          controls: 0,
-          disablekb: 1,
-          fs: 0,
-          modestbranding: 1,
-          playsinline: 1,
-          origin: typeof window !== "undefined" ? window.location.origin : "",
-        },
-        events: {
-          onReady: (event: any) => {
-            if (typeof event.target.unMute === "function") {
-              event.target.unMute();
-            }
-            event.target.setVolume(100);
-            event.target.playVideo();
-            setIsPlaying(true);
-          },
-          onStateChange: (event: any) => {
-            if (event.data === window.YT.PlayerState.PLAYING) {
-              setIsPlaying(true);
-            } else if (event.data === window.YT.PlayerState.ENDED) {
-              adjustScore(currentTrack.genre, 15);
-              handleAutoNext();
-            }
-          },
-        },
-      });
-    };
-
-    loadYT();
-
-    const timer = setInterval(() => {
-      if (playerRef.current && playerRef.current.getCurrentTime) {
-        const t = playerRef.current.getCurrentTime() || 0;
-        setCurrentTime(t);
-        playbackTimeRef.current = t;
-
-        if (t >= 30 && !listenedOver30sRef.current) {
-          listenedOver30sRef.current = true;
-          adjustScore(currentTrack.genre, 10);
-        }
-      }
-    }, 500);
-
-    return () => {
-      clearInterval(timer);
-      if (animationFrameIdRef.current) cancelAnimationFrame(animationFrameIdRef.current);
-    };
-  }, []);
-
-  // First-Time User Activation Trigger (Bypasses Browser Autoplay Restrictions)
-  const handleActivateRadio = () => {
-    setHasActivated(true);
-    if (playerRef.current) {
-      if (typeof playerRef.current.unMute === "function") {
-        playerRef.current.unMute();
-      }
-      if (typeof playerRef.current.setVolume === "function") {
-        playerRef.current.setVolume(100);
-      }
-      if (typeof playerRef.current.playVideo === "function") {
-        playerRef.current.playVideo();
-      }
-    }
-    setIsPlaying(true);
-  };
-
-  // 2. 🎵 Pseudo-Crossfade Volume Fade (300ms)
-  const fadeVolume = (targetVolume: number, duration: number = 300): Promise<void> => {
-    return new Promise((resolve) => {
-      if (!playerRef.current || !playerRef.current.setVolume) {
-        resolve();
-        return;
-      }
-
-      const startVolume = currentVolumeRef.current;
-      const startTime = performance.now();
-
-      const step = (now: number) => {
-        const elapsed = now - startTime;
-        const progress = Math.min(elapsed / duration, 1);
-        const newVolume = Math.round(startVolume + (targetVolume - startVolume) * progress);
-
-        currentVolumeRef.current = newVolume;
-        if (playerRef.current.setVolume) {
-          playerRef.current.setVolume(newVolume);
-        }
-
-        if (progress < 1) {
-          requestAnimationFrame(step);
-        } else {
-          resolve();
-        }
-      };
-
-      requestAnimationFrame(step);
-    });
-  };
-
-  // Switch Track Helper
-  const changeTrackWithCrossfade = async (nextTrack: RadioTrack) => {
-    if (isFading || !playerRef.current) return;
-    setIsFading(true);
-
-    // ① Fade Out (300ms)
-    await fadeVolume(0, 300);
-
-    // ② Switch Track
-    setCurrentTrack(nextTrack);
-    playbackTimeRef.current = 0;
-    listenedOver30sRef.current = false;
-
-    if (typeof playerRef.current.loadVideoById === "function") {
-      playerRef.current.loadVideoById(nextTrack.id);
-    }
-    if (typeof playerRef.current.unMute === "function") {
-      playerRef.current.unMute();
-    }
-
-    // ③ Fade In (300ms)
-    await fadeVolume(100, 300);
-    setIsFading(false);
-  };
-
-  // Auto Next when Track Ends
-  const handleAutoNext = () => {
-    const nextTrack = selectNextTrack(currentTrack.id);
-    changeTrackWithCrossfade(nextTrack);
-  };
-
-  // 3. ⏭️ Manual Skip Handler
-  const handleSkip = () => {
-    if (isFading) return;
-    if (!hasActivated) handleActivateRadio();
-
-    if (playbackTimeRef.current < 15) {
-      adjustScore(currentTrack.genre, -20);
-    }
-
-    const nextTrack = selectNextTrack(currentTrack.id);
-    changeTrackWithCrossfade(nextTrack);
-  };
-
-  // 4. 🔄 Regenerate Handler
-  const handleReshuffle = () => {
-    if (isFading) return;
-    if (!hasActivated) handleActivateRadio();
-
-    adjustScore(currentTrack.genre, -15);
-    const nextTrack = selectNextTrack(currentTrack.id);
-    changeTrackWithCrossfade(nextTrack);
-  };
-
-  // 5. 🌊 Symmetrical Waveform Canvas Animation
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    let stepCounter = 0;
+    let animationFrameId: number;
+    const barCount = 20; // 片側20本（左右計40本）
+
+    if (peaksRef.current.length !== barCount) {
+      peaksRef.current = new Array(barCount).fill(0);
+    }
 
     const render = () => {
-      animationFrameIdRef.current = requestAnimationFrame(render);
-      stepCounter += 0.05;
+      animationFrameId = requestAnimationFrame(render);
 
       const width = canvas.width;
       const height = canvas.height;
-      const centerY = height / 2;
-
       ctx.clearRect(0, 0, width, height);
 
-      const barCount = 42;
-      const barWidth = 6;
-      const gap = 8;
-      const totalWidth = barCount * (barWidth + gap);
-      const startX = (width - totalWidth) / 2;
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const barWidth = 4;
+      const barGap = 6;
+
+      // ネオン発光エフェクト
+      ctx.shadowBlur = 12;
+      ctx.shadowColor = "rgba(16, 185, 129, 0.7)";
+
+      // グラデーション (シアン ➔ エメラルド ➔ ミント ➔ エメラルド ➔ シアン)
+      const gradient = ctx.createLinearGradient(0, 0, 0, height);
+      gradient.addColorStop(0, "#06B6D4"); // シアン
+      gradient.addColorStop(0.3, "#10B981"); // エメラルド
+      gradient.addColorStop(0.5, "#34D399"); // ミント
+      gradient.addColorStop(0.7, "#10B981"); // エメラルド
+      gradient.addColorStop(1, "#06B6D4"); // シアン
+      ctx.fillStyle = gradient;
+
+      const t = Date.now() / 1000; // 時間経過（秒）
 
       for (let i = 0; i < barCount; i++) {
-        let amplitude = 4;
-        if (isPlaying && !isFading) {
-          const noise = Math.sin(stepCounter + i * 0.3) * Math.cos(stepCounter * 0.7 + i * 0.2);
-          amplitude = Math.abs(noise) * (centerY - 12) + 6;
+        let amplitude = 0.05;
+
+        if (isPlaying) {
+          // 複数の波（サイン波＋コサイン波＋高速ランダムノイズ）を合成して「複雑な生の音感」を演出
+          const wave1 = Math.sin(t * 4 + i * 0.4);
+          const wave2 = Math.cos(t * 8 - i * 0.2) * 0.5;
+          const wave3 = Math.sin(t * 15 + i * 0.8) * 0.3;
+          const randomSpike = Math.random() * 0.25;
+
+          // 中央（低音）と外側（高音）のベース振幅調整
+          const posRatio = 1 - Math.pow(i / barCount, 1.5);
+          const combined = (wave1 + wave2 + wave3 + 1.8) / 3.6;
+
+          amplitude = Math.min(1, Math.max(0.12, combined * posRatio + randomSpike));
+        } else {
+          // 静止/一時停止時はゆっくりとゆらぐ
+          amplitude = 0.05 + Math.sin(t * 2 + i * 0.3) * 0.02;
         }
 
-        const x = startX + i * (barWidth + gap);
+        const halfBarHeight = (amplitude * (height * 0.85)) / 2;
 
-        const gradient = ctx.createLinearGradient(0, centerY - amplitude, 0, centerY + amplitude);
-        gradient.addColorStop(0, "rgba(255, 255, 255, 0.95)");
-        gradient.addColorStop(0.5, "rgba(16, 185, 129, 0.8)");
-        gradient.addColorStop(1, "rgba(255, 255, 255, 0.95)");
+        // 右側バー（上下対称）
+        const xRight = centerX + i * (barWidth + barGap) + 4;
+        const xLeft = centerX - (i + 1) * (barWidth + barGap) - 4;
+
+        if (typeof ctx.roundRect === "function") {
+          ctx.beginPath();
+          ctx.roundRect(xRight, centerY - halfBarHeight, barWidth, halfBarHeight * 2, 2);
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.roundRect(xLeft, centerY - halfBarHeight, barWidth, halfBarHeight * 2, 2);
+          ctx.fill();
+        } else {
+          ctx.fillRect(xRight, centerY - halfBarHeight, barWidth, halfBarHeight * 2);
+          ctx.fillRect(xLeft, centerY - halfBarHeight, barWidth, halfBarHeight * 2);
+        }
+
+        // --- ピークホールド（頂点ドット） ---
+        if (halfBarHeight > peaksRef.current[i]) {
+          peaksRef.current[i] = halfBarHeight;
+        } else {
+          peaksRef.current[i] = Math.max(0, peaksRef.current[i] - 1.0); // 落下速度
+        }
+
+        const currentPeak = peaksRef.current[i];
+        ctx.fillStyle = "#A7F3D0";
+        ctx.shadowColor = "#A7F3D0";
+
+        if (currentPeak > 2) {
+          // 上頂点
+          ctx.fillRect(xRight, centerY - currentPeak - 3, barWidth, 2);
+          ctx.fillRect(xLeft, centerY - currentPeak - 3, barWidth, 2);
+          // 下頂点
+          ctx.fillRect(xRight, centerY + currentPeak + 1, barWidth, 2);
+          ctx.fillRect(xLeft, centerY + currentPeak + 1, barWidth, 2);
+        }
 
         ctx.fillStyle = gradient;
-
-        ctx.fillRect(x, centerY - amplitude, barWidth, amplitude);
-        ctx.fillRect(x, centerY, barWidth, amplitude);
+        ctx.shadowColor = "rgba(16, 185, 129, 0.7)";
       }
     };
 
     render();
 
     return () => {
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, [isPlaying]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={520}
+      height={120}
+      className="mx-auto my-6 max-w-full"
+    />
+  );
+};
+
+const FALLBACK_COVER_URL = "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=800&auto=format&fit=crop&q=80";
+const SPOTIFY_TOKEN_KEY = "spotify_access_token";
+
+// 👑 Seed Fallback Library
+const SEED_LIBRARY: TrackItem[] = [
+  {
+    uri: "spotify:track:3BIsJjQstI4sY7c1r2mI9i",
+    name: "踊り子",
+    artist: "Vaundy",
+    coverUrl: FALLBACK_COVER_URL,
+  },
+  {
+    uri: "spotify:track:03L1309fOOf8d5C56g9z37",
+    name: "SPECIALZ",
+    artist: "King Gnu",
+    coverUrl: FALLBACK_COVER_URL,
+  },
+  {
+    uri: "spotify:track:1vNvyg2k83K19O3c2b87mI",
+    name: "きらり",
+    artist: "藤井 風",
+    coverUrl: FALLBACK_COVER_URL,
+  },
+  {
+    uri: "spotify:track:18bS7Dk9qL7rL2yS0u41kX",
+    name: "フライディ・チャイナタウン",
+    artist: "泰葉",
+    coverUrl: FALLBACK_COVER_URL,
+  },
+  {
+    uri: "spotify:track:7m12028JmS0927xK188902",
+    name: "プラスティック・ラブ",
+    artist: "竹内まりや",
+    coverUrl: FALLBACK_COVER_URL,
+  },
+];
+
+// ⏱️ 行動評価（フィードバック）判定ロジック (evaluateUserAction)
+const evaluateUserAction = (
+  playedSec: number,
+  durationMs: number
+): { type: FeedbackType; scoreChange: number } => {
+  const durationSec = Math.floor(durationMs / 1000);
+  const playedRatio = durationSec > 0 ? playedSec / durationSec : 0;
+
+  if (playedSec < 10) {
+    return { type: "INSTANT_SKIP", scoreChange: -15 };
+  }
+
+  if (playedRatio >= 0.8 || (durationSec > 0 && playedSec >= durationSec - 5)) {
+    return { type: "COMPLETED", scoreChange: 10 };
+  }
+
+  return { type: "MID_SKIP", scoreChange: -5 };
+};
+
+// 🔑 PKCE OAuth Helper Functions
+const generateRandomString = (length: number) => {
+  const possible = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const values = crypto.getRandomValues(new Uint8Array(length));
+  return values.reduce((acc, x) => acc + possible[x % possible.length], "");
+};
+
+const sha256 = async (plain: string) => {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(plain);
+  return window.crypto.subtle.digest("SHA-256", data);
+};
+
+const base64encode = (input: ArrayBuffer) => {
+  return btoa(String.fromCharCode(...new Uint8Array(input)))
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+};
+
+const getRedirectUri = () => {
+  if (typeof window === "undefined") return "";
+  return window.location.origin.replace(/\/$/, "");
+};
+
+// 🎵 1. 未知の曲 ＋ お気に入り曲のハイブリッド取得 (fetchHybridTrackPool)
+const fetchHybridTrackPool = async (token: string): Promise<TrackItem[]> => {
+  try {
+    const favRes = await fetch("https://api.spotify.com/v1/me/tracks?limit=20", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (favRes.status === 401 || favRes.status === 403) {
+      console.warn("⚠️ Spotify token expired or missing scope. Clearing token...");
+      localStorage.removeItem(SPOTIFY_TOKEN_KEY);
+      if (typeof window !== "undefined") window.location.reload();
+      return SEED_LIBRARY;
+    }
+
+    let favTracks: TrackItem[] = [];
+
+    if (favRes.ok) {
+      const favData = await favRes.json();
+      if (favData.items && favData.items.length > 0) {
+        favTracks = favData.items.map((item: any) => ({
+          uri: item.track.uri,
+          name: item.track.name,
+          artist: item.track.artists.map((a: any) => a.name).join(", "),
+          artistId: item.track.artists[0]?.id,
+          coverUrl: item.track.album.images[0]?.url || FALLBACK_COVER_URL,
+        }));
+      }
+    }
+
+    let recommendedTracks: TrackItem[] = [];
+    const searchQueries = ["Vaundy", "YOASOBI", "King Gnu", "Fujii Kaze", "Official髭男dism"];
+    const randomArtist = searchQueries[Math.floor(Math.random() * searchQueries.length)];
+
+    console.log(`🔍 [Discovery Search] Fetching recommended tracks for: "${randomArtist}"`);
+    const searchRes = await fetch(
+      `https://api.spotify.com/v1/search?q=${encodeURIComponent(randomArtist)}&type=track&limit=15`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+
+    if (searchRes.ok) {
+      const searchData = await searchRes.json();
+      if (searchData.tracks && searchData.tracks.items?.length > 0) {
+        recommendedTracks = searchData.tracks.items.map((item: any) => ({
+          uri: item.uri,
+          name: item.name,
+          artist: item.artists.map((a: any) => a.name).join(", "),
+          artistId: item.artists[0]?.id,
+          coverUrl: item.album.images[0]?.url || FALLBACK_COVER_URL,
+        }));
+      }
+    }
+
+    const combined = [...favTracks, ...recommendedTracks];
+    console.log(`📻 [Track Pool Created] Total: ${combined.length} tracks (Fav: ${favTracks.length}, Rec: ${recommendedTracks.length})`);
+
+    return combined.length > 0 ? combined.sort(() => Math.random() - 0.5) : SEED_LIBRARY;
+  } catch (err) {
+    console.error("❌ Failed to fetch hybrid track pool:", err);
+    return SEED_LIBRARY;
+  }
+};
+
+// 🎵 2. クールダウン（重複・連続再生防止）付き選曲ロジック
+const selectNextTrackWithCooldown = (
+  pool: TrackItem[],
+  historyUris: string[],
+  historyArtists: string[]
+): TrackItem | null => {
+  if (!pool || pool.length === 0) return null;
+
+  const recentUris = historyUris.slice(-15);
+  const recentArtists = historyArtists.slice(-2);
+
+  const candidates = pool.filter((track) => {
+    const isRecentTrack = recentUris.includes(track.uri);
+    const isRecentArtist = recentArtists.includes(track.artist);
+    return !isRecentTrack && !isRecentArtist;
+  });
+
+  const fallbackCandidates = pool.filter((track) => !recentUris.includes(track.uri));
+  const finalPool = candidates.length > 0 ? candidates : (fallbackCandidates.length > 0 ? fallbackCandidates : pool);
+  return finalPool[Math.floor(Math.random() * finalPool.length)];
+};
+
+declare global {
+  interface Window {
+    onSpotifyWebPlaybackSDKReady: () => void;
+    Spotify: any;
+  }
+}
+
+export default function RadioPlayer() {
+  const [isMounted, setIsMounted] = useState(false);
+  const [token, setToken] = useState<string | null>(null);
+  const [hasRadioStarted, setHasRadioStarted] = useState(false);
+  const [isPremiumError, setIsPremiumError] = useState(false);
+  const [deviceId, setDeviceId] = useState<string | null>(null);
+
+  // 🔇 1. ミュート状態の管理 (isMuted)
+  const [isMuted, setIsMuted] = useState(false);
+
+  // ⚡ 自動再生フラグ (Auto-Start)
+  const autoStartedRef = useRef(false);
+
+  // ⏱️ Playback Duration Tracking & AI Feedback Logs State
+  const trackStartTimeRef = useRef<number | null>(null);
+  const currentTrackUriRef = useRef<string | null>(null);
+  const [currentPositionSec, setCurrentPositionSec] = useState<number>(0);
+  const currentPositionSecRef = useRef<number>(0);
+  const [feedbackLogs, setFeedbackLogs] = useState<FeedbackLog[]>([]);
+
+  // Personalized Hybrid Track Pool & Cooldown History
+  const [trackPool, setTrackPool] = useState<TrackItem[]>(SEED_LIBRARY);
+  const [historyUris, setHistoryUris] = useState<string[]>([]);
+  const [historyArtists, setHistoryArtists] = useState<string[]>([]);
+
+  // 📺 画面表示（UI）の 100% 受動同期 (player_state_changed のみで更新)
+  const [nowPlaying, setNowPlaying] = useState<NowPlayingState>({
+    uri: SEED_LIBRARY[0].uri,
+    title: SEED_LIBRARY[0].name,
+    artist: SEED_LIBRARY[0].artist,
+    coverUrl: SEED_LIBRARY[0].coverUrl,
+    durationMs: 0,
+    positionMs: 0,
+    isPaused: true,
+  });
+
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  // シングルトン playerRef 管理
+  const playerRef = useRef<any>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animationFrameIdRef = useRef<number | null>(null);
+
+  // 🛡️ Mount Check for Hydration Guarantee
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  // 🔑 PKCE Code Exchange & Access Token Load
+  useEffect(() => {
+    if (!isMounted) return;
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const code = urlParams.get("code");
+
+    if (code) {
+      const codeVerifier = localStorage.getItem("spotify_code_verifier");
+      const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "387ae192a82d41e4abb7acf114110694";
+      const redirectUri = getRedirectUri();
+
+      fetch("https://accounts.spotify.com/api/token", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          client_id: clientId,
+          grant_type: "authorization_code",
+          code: code,
+          redirect_uri: redirectUri,
+          code_verifier: codeVerifier || "",
+        }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.access_token) {
+            localStorage.setItem(SPOTIFY_TOKEN_KEY, data.access_token);
+            setToken(data.access_token);
+            window.history.replaceState({}, document.title, window.location.pathname);
+            console.log("🔑 [Spotify PKCE Auth] Access token successfully exchanged!");
+          } else {
+            console.warn("⚠️ Spotify Token Exchange Failed:", data);
+          }
+        })
+        .catch((err) => {
+          console.error("❌ Spotify Token Exchange Error:", err);
+        });
+    } else {
+      const savedToken = localStorage.getItem(SPOTIFY_TOKEN_KEY);
+      if (savedToken) {
+        setToken(savedToken);
+      }
+    }
+  }, [isMounted]);
+
+  // ⚡ 2. 起動時の前回の曲の自動再生再開 (Resume) ＆ 画面どこでもタップで解禁
+  useEffect(() => {
+    if (!isMounted) return;
+
+    const attemptAutoPlay = async () => {
+      if (autoStartedRef.current || !deviceId) return;
+
+      const savedToken = localStorage.getItem(SPOTIFY_TOKEN_KEY) || token;
+      if (!savedToken) return;
+
+      autoStartedRef.current = true;
+      console.log("📻 [Auto-Radio] 起動。前回のセッションを確認中...");
+
+      try {
+        // トラックプールをあらかじめ準備
+        const pool = await fetchHybridTrackPool(savedToken);
+        setTrackPool(pool);
+
+        if (playerRef.current && typeof playerRef.current.activateElement === "function") {
+          await playerRef.current.activateElement();
+        }
+
+        // 前回の再生状態（トラック情報）が存在するかチェック
+        if (playerRef.current && typeof playerRef.current.getCurrentState === "function") {
+          const state = await playerRef.current.getCurrentState();
+
+          if (state && state.track_window?.current_track) {
+            console.log("📻 [Auto-Radio] 前回の曲から再生を再開します:", state.track_window.current_track.name);
+            await playerRef.current.resume();
+            setHasRadioStarted(true);
+            setIsPremiumError(false);
+            return;
+          }
+        }
+
+        // 前回の状態がない場合（初回起動時等）のみ新曲を再生
+        if (pool.length > 0) {
+          const randomIndex = Math.floor(Math.random() * pool.length);
+          const firstTrack = pool[randomIndex];
+          setHistoryUris([firstTrack.uri]);
+          setHistoryArtists([firstTrack.artist]);
+
+          // 1. Transfer Playback
+          await fetch("https://api.spotify.com/v1/me/player", {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${savedToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              device_ids: [deviceId],
+              play: true,
+            }),
+          });
+
+          // 2. Play first track
+          const res = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${savedToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              uris: [firstTrack.uri],
+            }),
+          });
+
+          if (res.ok || res.status === 204) {
+            console.log(`🟢 [Auto-Radio] 新規トラックの再生がスタートしました: ${firstTrack.name}`);
+            setHasRadioStarted(true);
+            setIsPremiumError(false);
+          } else {
+            console.warn(`⚠️ Autoplay API response (${res.status}). Waiting for first user touch...`);
+          }
+        }
+      } catch (err) {
+        console.warn("⚠️ Autoplay blocked by browser. Waiting for first user touch...");
+      }
+    };
+
+    attemptAutoPlay();
+
+    // 画面のどこかを1回でもタップしたら自動起動するアンロック保険
+    const handleFirstInteraction = () => {
+      if (!autoStartedRef.current && deviceId) {
+        attemptAutoPlay();
+      }
+      window.removeEventListener("click", handleFirstInteraction);
+      window.removeEventListener("touchstart", handleFirstInteraction);
+    };
+
+    window.addEventListener("click", handleFirstInteraction);
+    window.addEventListener("touchstart", handleFirstInteraction);
+
+    return () => {
+      window.removeEventListener("click", handleFirstInteraction);
+      window.removeEventListener("touchstart", handleFirstInteraction);
+    };
+  }, [isMounted, deviceId, token]);
+
+  // 🔑 Login Redirect Handler
+  const handleLogin = async () => {
+    if (typeof window === "undefined") return;
+
+    const codeVerifier = generateRandomString(64);
+    const hashed = await sha256(codeVerifier);
+    const codeChallenge = base64encode(hashed);
+
+    window.localStorage.setItem("spotify_code_verifier", codeVerifier);
+
+    const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "387ae192a82d41e4abb7acf114110694";
+    const redirectUri = getRedirectUri();
+
+    const scope = [
+      "streaming",
+      "user-read-email",
+      "user-read-private",
+      "user-modify-playback-state",
+      "user-read-playback-state",
+      "user-library-read",
+      "user-top-read",
+    ].join(" ");
+
+    const authUrl = new URL("https://accounts.spotify.com/authorize");
+    authUrl.search = new URLSearchParams({
+      response_type: "code",
+      client_id: clientId,
+      scope: scope,
+      code_challenge_method: "S256",
+      code_challenge: codeChallenge,
+      redirect_uri: redirectUri,
+      show_dialog: "true",
+    }).toString();
+
+    window.location.href = authUrl.toString();
+  };
+
+  // 🔇 1. ミュート切替機能 (handleToggleMute)
+  const handleToggleMute = async () => {
+    if (!playerRef.current) return;
+    try {
+      const newMutedState = !isMuted;
+      setIsMuted(newMutedState);
+      await playerRef.current.setVolume(newMutedState ? 0 : 0.8);
+      console.log(`📻 [Radio Volume] ${newMutedState ? "Muted" : "Unmuted"}`);
+    } catch (err) {
+      console.error("❌ setVolume error:", err);
+    }
+  };
+
+  // ⏭️ スキップ処理 (handleSkip)
+  const handleSkip = async () => {
+    if (nowPlaying && nowPlaying.title && nowPlaying.durationMs > 0) {
+      let playedSec = 0;
+      if (trackStartTimeRef.current) {
+        playedSec = Math.floor((Date.now() - trackStartTimeRef.current) / 1000);
+      } else {
+        playedSec = currentPositionSecRef.current || currentPositionSec;
+      }
+
+      const evalResult = evaluateUserAction(playedSec, nowPlaying.durationMs);
+
+      console.log(`🧠 [AI Feedback Log]
+        曲名: ${nowPlaying.title}
+        実再生時間: ${playedSec}秒
+        判定: ${evalResult.type} (${evalResult.scoreChange > 0 ? "+" : ""}${evalResult.scoreChange}pt)
+      `);
+
+      setFeedbackLogs((prev) => [
+        ...prev,
+        {
+          trackUri: nowPlaying.uri || "",
+          trackName: nowPlaying.title,
+          artistName: nowPlaying.artist,
+          playedSeconds: playedSec,
+          type: evalResult.type,
+          scoreChange: evalResult.scoreChange,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    }
+
+    trackStartTimeRef.current = Date.now();
+
+    if (trackPool.length === 0 || !deviceId) return;
+
+    const nextTrack = selectNextTrackWithCooldown(trackPool, historyUris, historyArtists);
+    if (!nextTrack) return;
+
+    setHistoryUris((prev) => [...prev.slice(-20), nextTrack.uri]);
+    setHistoryArtists((prev) => [...prev.slice(-10), nextTrack.artist]);
+
+    const accessToken = localStorage.getItem(SPOTIFY_TOKEN_KEY) || token;
+    if (!accessToken) return;
+
+    try {
+      if (playerRef.current && typeof playerRef.current.activateElement === "function") {
+        await playerRef.current.activateElement();
+      }
+
+      // STEP 1: デバイスをアクティブ化 (Transfer Playback)
+      const transferRes = await fetch("https://api.spotify.com/v1/me/player", {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          device_ids: [deviceId],
+          play: true,
+        }),
+      });
+
+      if (transferRes.status === 404) {
+        console.warn("⚠️ Device 404 on transfer. Resetting start radio overlay for re-activation...");
+        setHasRadioStarted(false);
+        return;
+      }
+
+      // STEP 2: 指定された選曲の再生を開始 (/v1/me/player/play)
+      const res = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          uris: [nextTrack.uri],
+        }),
+      });
+
+      if (res.ok || res.status === 204) {
+        console.log(`🟢 [Spotify Hybrid Play] Playing: ${nextTrack.name} by ${nextTrack.artist}`);
+        setHasRadioStarted(true);
+        setIsPremiumError(false);
+      } else if (res.status === 404) {
+        console.warn("⚠️ Play request returned 404 Device Not Found. Prompting start radio overlay...");
+        setHasRadioStarted(false);
+      } else {
+        const errorText = await res.text().catch(() => "");
+        console.error(`⚠️ Spotify API Playback Error (${res.status}):`, errorText);
+        if (res.status === 403) {
+          setIsPremiumError(true);
+        } else if (res.status === 401) {
+          localStorage.removeItem(SPOTIFY_TOKEN_KEY);
+          setToken(null);
+        }
+      }
+    } catch (err) {
+      console.error("❌ Skip Exception:", err);
+    }
+  };
+
+  const handleStartRadio = async () => {
+    if (!playerRef.current || !deviceId) {
+      console.warn("⚠️ Player or Device ID not ready yet.");
+      return;
+    }
+
+    setHasRadioStarted(true);
+    await handleSkip();
+  };
+
+  // 📺 ⏱️ 経過時間更新 ＆ 画面表示（UI）の 100% 受動同期 (player_state_changed 監視)
+  useEffect(() => {
+    if (!isMounted || !token) return;
+
+    const loadSDK = () => {
+      if (window.Spotify && window.Spotify.Player) {
+        initSpotifyPlayer();
+        return;
+      }
+
+      window.onSpotifyWebPlaybackSDKReady = () => {
+        initSpotifyPlayer();
+      };
+
+      const script = document.createElement("script");
+      script.src = "https://sdk.scdn.co/spotify-player.js";
+      script.async = true;
+      document.body.appendChild(script);
+    };
+
+    const initSpotifyPlayer = () => {
+      if (playerRef.current) return;
+
+      const player = new window.Spotify.Player({
+        name: "Drive Tune Web Player",
+        getOAuthToken: (cb: (t: string) => void) => cb(token),
+        volume: 0.8,
+      });
+
+      playerRef.current = player;
+
+      player.addListener("ready", ({ device_id }: { device_id: string }) => {
+        console.log("🟢 [Spotify Web SDK Ready] Device ID:", device_id);
+        setDeviceId(device_id);
+      });
+
+      player.addListener("not_ready", ({ device_id }: { device_id: string }) => {
+        console.warn("⚠️ [Spotify Web SDK] Device is offline:", device_id);
+      });
+
+      // 📺 player_state_changed 内での自動送り制御 ＆ 受動同期
+      player.addListener("player_state_changed", (state: any) => {
+        if (!state) return;
+
+        const currentTrack = state.track_window?.current_track;
+        if (currentTrack) {
+          if (currentTrackUriRef.current !== currentTrack.uri && !state.paused) {
+            currentTrackUriRef.current = currentTrack.uri;
+            trackStartTimeRef.current = Date.now();
+          }
+
+          const posSec = trackStartTimeRef.current
+            ? Math.floor((Date.now() - trackStartTimeRef.current) / 1000)
+            : Math.floor(state.position / 1000);
+
+          setCurrentPositionSec(posSec);
+          currentPositionSecRef.current = posSec;
+
+          const trackId = currentTrack.id || (currentTrack.uri ? currentTrack.uri.split(":")[2] : null);
+
+          setNowPlaying({
+            id: trackId || undefined,
+            uri: currentTrack.uri,
+            title: currentTrack.name,
+            artist: currentTrack.artists.map((a: any) => a.name).join(", "),
+            coverUrl: currentTrack.album?.images?.[0]?.url || FALLBACK_COVER_URL,
+            durationMs: state.duration,
+            positionMs: state.position,
+            isPaused: state.paused,
+          });
+
+          setIsPlaying(!state.paused);
+
+          // 曲が最後まで流れて自動終了したかを検知して次の曲へ
+          if (
+            state.position === 0 &&
+            state.paused &&
+            state.track_window?.previous_tracks?.length > 0
+          ) {
+            console.log("📻 [Auto-Radio] 曲が終了しました。次の曲を自動再生します...");
+            handleSkip();
+          }
+        }
+      });
+
+      player.addListener("initialization_error", ({ message }: any) => {
+        console.error("❌ Spotify SDK Init Error:", message);
+      });
+
+      player.addListener("authentication_error", ({ message }: any) => {
+        console.error("❌ Spotify Auth Error (Expired token):", message);
+        localStorage.removeItem(SPOTIFY_TOKEN_KEY);
+        setToken(null);
+      });
+
+      player.addListener("account_error", ({ message }: any) => {
+        console.error("❌ Spotify Account Error (Requires Spotify Premium):", message);
+        setIsPremiumError(true);
+      });
+
+      player.connect();
+    };
+
+    loadSDK();
+
+    return () => {
+      if (playerRef.current && typeof playerRef.current.disconnect === "function") {
+        playerRef.current.disconnect();
+        playerRef.current = null;
+      }
       if (animationFrameIdRef.current) cancelAnimationFrame(animationFrameIdRef.current);
     };
-  }, [isPlaying, isFading]);
+  }, [isMounted, token]);
 
-  // 6. 📝 Real-Time Single-Line Lyric Extraction
-  const currentLyric =
-    [...currentTrack.lyrics].reverse().find((l) => currentTime >= l.time)?.text ||
-    currentTrack.lyrics[0]?.text ||
-    "🎵 DriveTuner Radio • AI Streaming";
+  // 🎵 Web Audio API AnalyserNode Ref
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+
+  // AudioContext & Analyser の初期化
+  const setupAudioAnalyser = (mediaStreamOrAudioEl: HTMLAudioElement) => {
+    if (analyserRef.current) return;
+    try {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioContextClass();
+      const analyser = audioCtx.createAnalyser();
+
+      analyser.fftSize = 64; // バーの数に合わせた解像度 (32の周波数ビン)
+      analyser.smoothingTimeConstant = 0.8; // 動きの滑らかさ
+
+      const source = audioCtx.createMediaElementSource(mediaStreamOrAudioEl);
+      source.connect(analyser);
+      analyser.connect(audioCtx.destination);
+
+      audioCtxRef.current = audioCtx;
+      analyserRef.current = analyser;
+      console.log("🎵 [Web Audio API] AnalyserNode initialized successfully.");
+    } catch (err) {
+      console.warn("⚠️ setupAudioAnalyser warning:", err);
+    }
+  };
+
+  // 🌊 Web Audio API (AnalyserNode) ＆ シンメトリー（左右対称）波形のリアルタイム描画 (requestAnimationFrame)
+  useEffect(() => {
+    if (!isMounted) return;
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    let animationFrameId: number;
+    let stepCounter = 0;
+
+    const renderFrame = () => {
+      animationFrameId = requestAnimationFrame(renderFrame);
+      stepCounter += 0.05;
+
+      const width = canvas.width;
+      const height = canvas.height;
+      ctx.clearRect(0, 0, width, height);
+
+      // バーの数（片側16本 ➔ 左右合計32本）
+      const barCount = 16;
+      const barWidth = 4;
+      const barGap = 6;
+      const centerX = width / 2;
+
+      let dataArray: Uint8Array | null = null;
+      if (analyserRef.current && isPlaying && !isMuted) {
+        const bufferLength = analyserRef.current.frequencyBinCount;
+        dataArray = new Uint8Array(bufferLength);
+        (analyserRef.current.getByteFrequencyData as any)(dataArray);
+      }
+
+      for (let i = 0; i < barCount; i++) {
+        let barHeight = 4;
+
+        if (dataArray && dataArray[i] !== undefined) {
+          const value = dataArray[i] || 0;
+          const percent = value / 255;
+          barHeight = Math.max(4, percent * (height * 0.8));
+        } else if (isPlaying && !isMuted) {
+          const noise = Math.sin(stepCounter + i * 0.3) * Math.cos(stepCounter * 0.7 + i * 0.2);
+          barHeight = Math.max(4, Math.abs(noise) * (height * 0.75) + 4);
+        }
+
+        const xOffset = i * (barWidth + barGap);
+
+        // ネオンカラーグラデーション (Spotify Green #1DB954 ➔ Deep Blue #1E3A8A)
+        const gradient = ctx.createLinearGradient(0, (height - barHeight) / 2, 0, (height + barHeight) / 2);
+        gradient.addColorStop(0, "#1DB954");
+        gradient.addColorStop(0.5, "#34D399");
+        gradient.addColorStop(1, "#1E3A8A");
+        ctx.fillStyle = gradient;
+
+        // 右側の描画 (roundRect)
+        if (typeof ctx.roundRect === "function") {
+          ctx.beginPath();
+          ctx.roundRect(centerX + xOffset, (height - barHeight) / 2, barWidth, barHeight, 2);
+          ctx.fill();
+
+          // 左側の描画 (シンメトリー)
+          ctx.beginPath();
+          ctx.roundRect(centerX - xOffset - barWidth, (height - barHeight) / 2, barWidth, barHeight, 2);
+          ctx.fill();
+        } else {
+          ctx.fillRect(centerX + xOffset, (height - barHeight) / 2, barWidth, barHeight);
+          ctx.fillRect(centerX - xOffset - barWidth, (height - barHeight) / 2, barWidth, barHeight);
+        }
+      }
+    };
+
+    renderFrame();
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, [isMounted, isPlaying, isMuted]);
+
+  // 🛡️ SSR Hydration Guarantee
+  if (!isMounted) {
+    return (
+      <main className="relative w-screen h-screen overflow-hidden bg-black text-white flex items-center justify-center font-sans">
+        <div className="w-24 h-24 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center animate-pulse shadow-[0_0_50px_rgba(16,185,129,0.5)]">
+          <span className="text-4xl text-emerald-400">🎵</span>
+        </div>
+      </main>
+    );
+  }
+
+  // 🔑 Sleek Spotify Premium Login Overlay
+  if (!token) {
+    return (
+      <main className="relative w-screen h-screen overflow-hidden bg-black text-white flex flex-col items-center justify-center p-6 select-none font-sans">
+        <div className="fixed inset-0 bg-gradient-to-b from-zinc-950 via-black to-zinc-950 pointer-events-none" />
+        <div className="relative z-10 max-w-md text-center space-y-6">
+          <div className="w-28 h-28 mx-auto rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center animate-pulse shadow-[0_0_60px_rgba(16,185,129,0.5)]">
+            <span className="text-5xl">💚</span>
+          </div>
+
+          <div className="space-y-2">
+            <h1 className="text-3xl sm:text-4xl font-black tracking-tight text-white">
+              DriveTuner Radio
+            </h1>
+            <p className="text-sm sm:text-base text-emerald-400 font-semibold tracking-wide">
+              本物のメジャー J-POP をクリアにストリーミング
+            </p>
+          </div>
+
+          <button
+            onClick={handleLogin}
+            className="w-full py-4 px-8 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-black font-extrabold rounded-full text-base shadow-2xl transition-all duration-200 cursor-pointer flex items-center justify-center gap-3"
+          >
+            <span>Spotify Premium でログイン</span>
+            <span className="text-xl">🎵</span>
+          </button>
+
+          <p className="text-xs text-zinc-500">
+            ※ Spotify Web Playback SDK の再生には Spotify Premium アカウントが必要です
+          </p>
+        </div>
+      </main>
+    );
+  }
+
+  // 🔇 3. ブラウザ自動再生ブロック（Autoplay Policy）対策のフォールバック
+  if (!hasRadioStarted) {
+    return (
+      <main
+        onClick={handleStartRadio}
+        className="relative w-screen h-screen overflow-hidden bg-black text-white flex flex-col items-center justify-center p-6 select-none font-sans cursor-pointer"
+      >
+        <div className="fixed inset-0 bg-gradient-to-b from-zinc-950 via-black to-zinc-950 pointer-events-none" />
+        <div className="relative z-10 max-w-md text-center space-y-6">
+          <div className="w-28 h-28 mx-auto rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center animate-pulse shadow-[0_0_60px_rgba(16,185,129,0.5)]">
+            <span className="text-5xl">📻</span>
+          </div>
+
+          <div className="space-y-2">
+            <h2 className="text-2xl sm:text-4xl font-black tracking-tight text-white">
+              ラジオを聴く (タップして起動) 📻
+            </h2>
+            <p className="text-xs sm:text-sm text-emerald-400 font-semibold tracking-wider">
+              タップして高音質 J-POP ラジオストリーミングを開始します
+            </p>
+          </div>
+
+          <button className="w-full py-4 px-8 bg-white text-black hover:bg-neutral-200 active:scale-95 font-extrabold rounded-full text-base shadow-2xl transition-all duration-200 cursor-pointer">
+            タップして再生を開始
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="relative w-screen h-screen overflow-hidden bg-black text-white flex flex-col justify-between items-center py-10 px-6 select-none font-sans">
-      {/* First-Time User Activation Fullscreen Overlay (Bypasses Browser Autoplay Restrictions) */}
-      {!hasActivated && (
-        <div
-          onClick={handleActivateRadio}
-          className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/85 backdrop-blur-2xl cursor-pointer transition-all duration-500 hover:bg-black/80"
-        >
-          <div className="w-24 h-24 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center mb-6 animate-pulse shadow-[0_0_50px_rgba(16,185,129,0.5)]">
-            <span className="text-4xl text-emerald-400">📻</span>
-          </div>
-          <h2 className="text-2xl sm:text-4xl font-black text-white tracking-tight text-center px-4 mb-2">
-            タップしてドライブ・ラジオを開始 📻
-          </h2>
-          <p className="text-xs sm:text-sm text-emerald-400 font-semibold tracking-wider text-center px-6">
-            ブラウザの自動再生規制を解除し、100%リアルタイムストリーミングを開始します
-          </p>
+      {/* ⚠️ 403 Premium / Device Warning Toast */}
+      {isPremiumError && (
+        <div className="fixed top-4 z-50 px-6 py-3 bg-rose-500/90 border border-rose-400 text-white rounded-full text-xs sm:text-sm font-bold shadow-2xl backdrop-blur-md animate-bounce">
+          ⚠️ 403 Error: Spotify Premium アカウント、またはアクティブなデバイス許可が必要です。再ログインをお試しください。
         </div>
       )}
 
-      {/* Hidden YouTube IFrame Player */}
-      <div className="absolute top-0 left-0 opacity-0 pointer-events-none">
-        <div id="yt-hidden-player" />
-      </div>
-
-      {/* 🖼️ Background: Fullscreen Album Artwork with blur(24px) & Dark Gradient Overlay */}
+      {/* 🖼️ Background: Fullscreen Album Artwork with backdrop-filter: blur(24px) & Dark Gradient Overlay */}
       <div
         className="absolute inset-0 bg-cover bg-center transition-all duration-1000 scale-110 filter blur-[24px] opacity-40"
-        style={{ backgroundImage: `url(${currentTrack.coverUrl})` }}
+        style={{ backgroundImage: `url(${nowPlaying.coverUrl})` }}
       />
       <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/90 pointer-events-none" />
 
-      {/* 1. TOP SECTION: Action Area (ONLY Regenerate & Skip Buttons) */}
+      {/* 🎛️ 1. TOP SECTION: Action Area (ONLY Mute Toggle & Skip Buttons) */}
       <div className="relative z-10 w-full max-w-md flex justify-around items-center pt-4">
+        {/* 🔇 ミュート切替ボタン */}
         <button
-          onClick={handleReshuffle}
-          disabled={isFading}
-          className="flex items-center gap-2.5 px-6 py-3.5 bg-white/10 hover:bg-white/20 active:scale-95 transition backdrop-blur-md rounded-full border border-white/20 text-sm font-bold shadow-xl cursor-pointer"
+          onClick={handleToggleMute}
+          className={`flex items-center gap-2 px-6 py-3.5 transition active:scale-95 backdrop-blur-md rounded-full border text-sm font-bold shadow-xl cursor-pointer ${
+            isMuted
+              ? "bg-rose-500/20 border-rose-400/50 text-rose-300 hover:bg-rose-500/30"
+              : "bg-white/10 border-white/20 text-white hover:bg-white/20"
+          }`}
         >
-          <span className="text-lg">🔄</span>
-          <span>再生成</span>
+          <span className="text-lg">{isMuted ? "🔇" : "🔊"}</span>
+          <span>{isMuted ? "解除" : "消音"}</span>
         </button>
 
+        {/* ⏭️ スキップボタン */}
         <button
           onClick={handleSkip}
-          disabled={isFading}
-          className="flex items-center gap-2.5 px-8 py-3.5 bg-white text-black hover:bg-neutral-200 active:scale-95 transition rounded-full font-extrabold shadow-2xl text-sm cursor-pointer"
+          className="flex items-center gap-2.5 px-8 py-3.5 bg-white text-black hover:bg-neutral-200 active:scale-95 transition rounded-full text-sm font-extrabold shadow-2xl cursor-pointer"
         >
           <span>スキップ</span>
           <span className="text-lg">⏭</span>
         </button>
       </div>
 
-      {/* 2. CENTER-UPPER SECTION: Symmetrical Waveform Canvas Visualizer */}
+      {/* 2. CENTER-UPPER SECTION: 完全独立型 60fps リアルタイム波形 (FluidOrganicEqualizer) */}
       <div className="relative z-10 w-full flex-1 flex items-center justify-center my-4">
-        <canvas
-          ref={canvasRef}
-          width={640}
-          height={180}
-          className="w-full max-w-lg h-40 object-contain"
-        />
+        <FluidOrganicEqualizer isPlaying={isPlaying && !isMuted} />
       </div>
 
-      {/* 3. CENTER-LOWER SECTION: Track Metadata */}
-      <div className="relative z-10 text-center space-y-2 mb-6 transition-all duration-300">
+      {/* 3. CENTER-LOWER SECTION: Track Metadata (100% Driven PASSIVELY by Spotify Player State) */}
+      <div className="relative z-10 text-center space-y-2 mb-6 transition-all duration-300 transform">
         <h1 className="text-3xl sm:text-5xl font-black tracking-tight drop-shadow-lg text-white">
-          {currentTrack.title}
+          {nowPlaying.title}
         </h1>
         <p className="text-base sm:text-xl text-emerald-400 font-bold tracking-wide">
-          {currentTrack.artist}
+          {nowPlaying.artist}
         </p>
       </div>
 
-      {/* 4. BOTTOM SECTION: Real-Time Single-Line Synchronized Lyrics */}
+      {/* 4. BOTTOM SECTION: Real-Time Audio Streaming Status & Playback Timer */}
       <div className="relative z-10 w-full max-w-md text-center h-16 flex items-center justify-center px-4 bg-white/5 border border-white/10 rounded-2xl backdrop-blur-lg shadow-xl">
         <p className="text-base sm:text-lg font-medium text-emerald-200/90 transition-all duration-500 ease-out">
-          {currentLyric}
+          🎵 {nowPlaying.title} - {nowPlaying.artist} ({currentPositionSec}s)
         </p>
       </div>
     </main>

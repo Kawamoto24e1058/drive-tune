@@ -7,24 +7,26 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "DriveTuner - Time-Based Spotify Drive Mix PWA",
-  description: "Generate personalized, time-based Spotify playlists matching your driving vibe with an interactive audio visualizer.",
+  title: "DriveTune - Spotify Drive Radio PWA",
+  description: "Time-based Spotify recommendation engine & 60fps audio visualizer for driving.",
   manifest: "/manifest.json",
   icons: {
-    icon: "/favicon.ico",
+    icon: "/icon-192.png",
+    apple: "/apple-touch-icon.png",
   },
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "DriveTuner",
+    title: "DriveTune",
   },
 };
 
 export const viewport: Viewport = {
-  themeColor: "#1DB954",
+  themeColor: "#06B6D4",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
+  userScalable: false,
 };
 
 export default function RootLayout({
@@ -33,9 +35,32 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.className} dark h-full antialiased`}>
-      <body className="min-h-full flex flex-col bg-[#121212] text-white">
+    <html lang="ja" className={`${inter.className} dark h-full antialiased`}>
+      <head>
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+      </head>
+      <body className="min-h-full flex flex-col bg-black text-white selection:bg-cyan-500/30">
         {children}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              if ('serviceWorker' in navigator) {
+                window.addEventListener('load', function() {
+                  navigator.serviceWorker.register('/sw.js').then(
+                    function(registration) {
+                      console.log('🟢 PWA ServiceWorker registered with scope:', registration.scope);
+                    },
+                    function(err) {
+                      console.warn('⚠️ PWA ServiceWorker registration failed:', err);
+                    }
+                  );
+                });
+              }
+            `,
+          }}
+        />
       </body>
     </html>
   );
