@@ -623,82 +623,79 @@ export default function RadioPlayer() {
     }
   };
 
-  // ⏭️ スキップ処理 (handleSkip)
+  // ⏭️ 安全なスキップ処理 (handleSkip)
   const handleSkip = async () => {
-    if (nowPlaying && nowPlaying.title && nowPlaying.durationMs > 0) {
-      let playedSec = 0;
-      if (trackStartTimeRef.current) {
-        playedSec = Math.floor((Date.now() - trackStartTimeRef.current) / 1000);
-      } else {
-        playedSec = currentPositionSecRef.current || currentPositionSec;
+    try {
+      if (nowPlaying && nowPlaying.title && nowPlaying.durationMs > 0) {
+        let playedSec = 0;
+        if (trackStartTimeRef.current) {
+          playedSec = Math.floor((Date.now() - trackStartTimeRef.current) / 1000);
+        } else {
+          playedSec = currentPositionSecRef.current || currentPositionSec;
+        }
+
+        const evalResult = evaluateUserAction(playedSec, nowPlaying.durationMs);
+
+        console.log(`🧠 [AI Feedback Log]
+          曲名: ${nowPlaying.title}
+          実再生時間: ${playedSec}秒
+          判定: ${evalResult.type} (${evalResult.scoreChange > 0 ? "+" : ""}${evalResult.scoreChange}pt)
+        `);
+
+        setFeedbackLogs((prev) => [
+          ...prev,
+          {
+            trackUri: nowPlaying.uri || "",
+            trackName: nowPlaying.title,
+            artistName: nowPlaying.artist,
+            playedSeconds: playedSec,
+            type: evalResult.type,
+            scoreChange: evalResult.scoreChange,
+            timestamp: new Date().toISOString(),
+          },
+        ]);
       }
 
-      const evalResult = evaluateUserAction(playedSec, nowPlaying.durationMs);
+      trackStartTimeRef.current = Date.now();
 
-      console.log(`🧠 [AI Feedback Log]
-        曲名: ${nowPlaying.title}
-        実再生時間: ${playedSec}秒
-        判定: ${evalResult.type} (${evalResult.scoreChange > 0 ? "+" : ""}${evalResult.scoreChange}pt)
-      `);
+      const savedToken = localStorage.getItem(SPOTIFY_TOKEN_KEY) || token;
+      if (!savedToken || !deviceId) {
+        console.warn("⚠️ [Skip Cancelled] Token or DeviceID is missing.");
+        return;
+      }
 
-      setFeedbackLogs((prev) => [
-        ...prev,
-        {
-          trackUri: nowPlaying.uri || "",
-          trackName: nowPlaying.title,
-          artistName: nowPlaying.artist,
-          playedSeconds: playedSec,
-          type: evalResult.type,
-          scoreChange: evalResult.scoreChange,
-          timestamp: new Date().toISOString(),
-        },
-      ]);
-    }
-
-    trackStartTimeRef.current = Date.now();
-
-    if (trackPool.length === 0 || !deviceId) return;
-
-    const nextTrack = selectNextTrackWithCooldown(trackPool, historyUris, historyArtists);
-    if (!nextTrack) return;
-
-    setHistoryUris((prev) => [...prev.slice(-20), nextTrack.uri]);
-    setHistoryArtists((prev) => [...prev.slice(-10), nextTrack.artist]);
-
-    const accessToken = localStorage.getItem(SPOTIFY_TOKEN_KEY) || token;
-    if (!accessToken) return;
-
-    try {
       if (playerRef.current && typeof playerRef.current.activateElement === "function") {
         await playerRef.current.activateElement();
       }
 
-      // STEP 1: デバイスをアクティブ化 (Transfer Playback)
-      const transferRes = await fetch("https://api.spotify.com/v1/me/player", {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          device_ids: [deviceId],
-          play: true,
-        }),
-      });
+      // トラックプールから次の曲を選出
+      const histUris = historyUris.length > 0 ? historyUris : feedbackLogs.map((l) => l.trackUri);
+      const histArtists = historyArtists.length > 0 ? historyArtists : feedbackLogs.map((l) => l.artistName);
 
-      if (transferRes.status === 404) {
-        console.warn("⚠️ Device 404 on transfer. Resetting start radio overlay for re-activation...");
-        setHasRadioStarted(false);
-        return;
+      const nextTrack = selectNextTrackWithCooldown(trackPool, histUris, histArtists);
+
+      if (nextTrack) {
+        console.log(`📻 [Auto-Radio] Next track selected: ${nextTrack.name} by ${nextTrack.artist}`);
+        setHistoryUris((prev) => [...prev.slice(-20), nextTrack.uri]);
+        setHistoryArtists((prev) => [...prev.slice(-10), nextTrack.artist]);
+        await startPlaybackWithTrack(nextTrack.uri, deviceId);
+        setHasRadioStarted(true);
+        setIsPremiumError(false);
+      } else {
+        console.warn("⚠️ [Track Pool Empty] Re-fetching track pool...");
+        const newPool = await fetchHybridTrackPool(savedToken);
+        setTrackPool(newPool);
+        if (newPool.length > 0) {
+          const first = newPool[0];
+          setHistoryUris((prev) => [...prev.slice(-20), first.uri]);
+          setHistoryArtists((prev) => [...prev.slice(-10), first.artist]);
+          await startPlaybackWithTrack(first.uri, deviceId);
+          setHasRadioStarted(true);
+          setIsPremiumError(false);
+        }
       }
-
-      // STEP 2: startPlaybackWithTrack (リピート OFF ＋ device_id 明示再生)
-      await startPlaybackWithTrack(nextTrack.uri, deviceId);
-      console.log(`🟢 [Spotify Hybrid Play] Playing: ${nextTrack.name} by ${nextTrack.artist}`);
-      setHasRadioStarted(true);
-      setIsPremiumError(false);
     } catch (err) {
-      console.error("❌ Skip Exception:", err);
+      console.error("❌ Failed to skip to next track:", err);
     }
   };
 
@@ -785,21 +782,29 @@ export default function RadioPlayer() {
 
           setIsPlaying(!state.paused);
 
-          // ⏭️ 4. 曲終了時の自動送り重複防止ガード (isHandlingEndRef)
-          if (
-            state.position === 0 &&
-            state.paused &&
-            state.track_window?.previous_tracks?.length > 0
-          ) {
+          // ⏭️ 曲完奏時の自動送り判定 (Auto-Skip on Track Completion)
+          const durationSec = Math.floor(state.duration / 1000);
+          const isTrackEnded =
+            (state.paused && (state.position === 0 || state.position >= state.duration - 1500)) ||
+            (state.duration > 0 && state.position >= state.duration - 1000) ||
+            (durationSec > 0 && posSec >= durationSec && state.paused);
+
+          if (isTrackEnded) {
             if (!isHandlingEndRef.current) {
               isHandlingEndRef.current = true;
-              console.log("📻 [Auto-Radio] Track finished. Auto skipping to next...");
+              console.log("📻 [Auto-Radio] 曲の完奏を検知。次のトラックへ自動移行します...");
 
-              handleSkip().then(() => {
-                setTimeout(() => {
-                  isHandlingEndRef.current = false;
-                }, 2000);
-              });
+              (async () => {
+                try {
+                  await handleSkip();
+                } catch (e) {
+                  console.error("Auto skip execution failed:", e);
+                } finally {
+                  setTimeout(() => {
+                    isHandlingEndRef.current = false;
+                  }, 2500);
+                }
+              })();
             }
           }
         }
@@ -833,6 +838,45 @@ export default function RadioPlayer() {
       if (animationFrameIdRef.current) cancelAnimationFrame(animationFrameIdRef.current);
     };
   }, [isMounted, token]);
+
+  // ⏱️ 1秒ごとの完奏監視タイマー (Dual Safety Net for Track End)
+  useEffect(() => {
+    if (!isMounted || !hasRadioStarted) return;
+
+    const interval = setInterval(() => {
+      if (!nowPlaying || nowPlaying.durationMs <= 0) return;
+      const durationSec = Math.floor(nowPlaying.durationMs / 1000);
+
+      let currentSec = 0;
+      if (trackStartTimeRef.current) {
+        currentSec = Math.floor((Date.now() - trackStartTimeRef.current) / 1000);
+      } else {
+        currentSec = currentPositionSecRef.current;
+      }
+
+      // 再生時間が曲の長さ（秒数）に達した場合に自動スキップ発火
+      if (durationSec > 0 && currentSec >= durationSec) {
+        if (!isHandlingEndRef.current) {
+          isHandlingEndRef.current = true;
+          console.log(`📻 [Auto-Radio Timer] 経過時間 (${currentSec}s / ${durationSec}s) が満了しました。次の曲へ自動移行します。`);
+
+          (async () => {
+            try {
+              await handleSkip();
+            } catch (e) {
+              console.error("Auto skip execution failed:", e);
+            } finally {
+              setTimeout(() => {
+                isHandlingEndRef.current = false;
+              }, 2500);
+            }
+          })();
+        }
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isMounted, hasRadioStarted, nowPlaying]);
 
   // 🎵 Web Audio API AnalyserNode Ref
   const audioCtxRef = useRef<AudioContext | null>(null);
