@@ -348,8 +348,9 @@ export default function RadioPlayer() {
   // 🔇 1. ミュート状態の管理 (isMuted)
   const [isMuted, setIsMuted] = useState(false);
 
-  // ⚡ 自動再生フラグ (Auto-Start)
+  // ⚡ 自動再生フラグ ＆ 重複防止ガード (Auto-Start & End Guard)
   const autoStartedRef = useRef(false);
+  const isHandlingEndRef = useRef(false);
 
   // ⏱️ Playback Duration Tracking & AI Feedback Logs State
   const trackStartTimeRef = useRef<number | null>(null);
@@ -357,6 +358,49 @@ export default function RadioPlayer() {
   const [currentPositionSec, setCurrentPositionSec] = useState<number>(0);
   const currentPositionSecRef = useRef<number>(0);
   const [feedbackLogs, setFeedbackLogs] = useState<FeedbackLog[]>([]);
+
+  // 🔁 1. Spotify リピートモードの強制解除 (disableSpotifyRepeat)
+  const disableSpotifyRepeat = async (authToken: string) => {
+    try {
+      await fetch("https://api.spotify.com/v1/me/player/repeat?state=off", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      console.log("📻 [Radio Setup] Repeat mode disabled.");
+    } catch (err) {
+      console.warn("Failed to disable repeat mode:", err);
+    }
+  };
+
+  // 2. スキップ時の確実な再生 ＆ リピート回避 (startPlaybackWithTrack)
+  const startPlaybackWithTrack = async (trackUri: string, targetDeviceId: string) => {
+    const savedToken = localStorage.getItem(SPOTIFY_TOKEN_KEY) || token;
+    if (!savedToken) return;
+
+    try {
+      // リピート設定を OFF にリセット
+      await disableSpotifyRepeat(savedToken);
+
+      // デバイスIDを明示して再生命令を送信
+      const res = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${targetDeviceId}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${savedToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ uris: [trackUri] }),
+      });
+
+      if (!res.ok) {
+        console.warn("Playback request failed, attempting SDK resume fallback...");
+        if (playerRef.current && typeof playerRef.current.resume === "function") {
+          await playerRef.current.resume();
+        }
+      }
+    } catch (err) {
+      console.error("Failed to start playback:", err);
+    }
+  };
 
   // Personalized Hybrid Track Pool & Cooldown History
   const [trackPool, setTrackPool] = useState<TrackItem[]>(SEED_LIBRARY);
@@ -488,25 +532,11 @@ export default function RadioPlayer() {
             }),
           });
 
-          // 2. Play first track
-          const res = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-            method: "PUT",
-            headers: {
-              Authorization: `Bearer ${savedToken}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              uris: [firstTrack.uri],
-            }),
-          });
-
-          if (res.ok || res.status === 204) {
-            console.log(`🟢 [Auto-Radio] 新規トラックの再生がスタートしました: ${firstTrack.name}`);
-            setHasRadioStarted(true);
-            setIsPremiumError(false);
-          } else {
-            console.warn(`⚠️ Autoplay API response (${res.status}). Waiting for first user touch...`);
-          }
+          // 2. Play first track with repeat disabled
+          await startPlaybackWithTrack(firstTrack.uri, deviceId);
+          console.log(`🟢 [Auto-Radio] 新規トラックの再生がスタートしました: ${firstTrack.name}`);
+          setHasRadioStarted(true);
+          setIsPremiumError(false);
         }
       } catch (err) {
         console.warn("⚠️ Autoplay blocked by browser. Waiting for first user touch...");
@@ -570,16 +600,26 @@ export default function RadioPlayer() {
     window.location.href = authUrl.toString();
   };
 
-  // 🔇 1. ミュート切替機能 (handleToggleMute)
+  // 🔇 3. スマホ対応ミュート（Pause/Resume フォールバック）(handleToggleMute)
   const handleToggleMute = async () => {
     if (!playerRef.current) return;
+
+    const newMutedState = !isMuted;
+    setIsMuted(newMutedState);
+
     try {
-      const newMutedState = !isMuted;
-      setIsMuted(newMutedState);
+      // 1. まず標準の setVolume を試行
       await playerRef.current.setVolume(newMutedState ? 0 : 0.8);
-      console.log(`📻 [Radio Volume] ${newMutedState ? "Muted" : "Unmuted"}`);
+
+      // 2. モバイルブラウザ対策: ミュート時は一時停止、解除時は再生再開でフォールバック
+      if (newMutedState) {
+        await playerRef.current.pause();
+      } else {
+        await playerRef.current.resume();
+      }
+      console.log(`📻 [Radio Volume] ${newMutedState ? "Muted (Paused)" : "Unmuted (Resumed)"}`);
     } catch (err) {
-      console.error("❌ setVolume error:", err);
+      console.error("Mute toggle failed:", err);
     }
   };
 
@@ -652,35 +692,11 @@ export default function RadioPlayer() {
         return;
       }
 
-      // STEP 2: 指定された選曲の再生を開始 (/v1/me/player/play)
-      const res = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          uris: [nextTrack.uri],
-        }),
-      });
-
-      if (res.ok || res.status === 204) {
-        console.log(`🟢 [Spotify Hybrid Play] Playing: ${nextTrack.name} by ${nextTrack.artist}`);
-        setHasRadioStarted(true);
-        setIsPremiumError(false);
-      } else if (res.status === 404) {
-        console.warn("⚠️ Play request returned 404 Device Not Found. Prompting start radio overlay...");
-        setHasRadioStarted(false);
-      } else {
-        const errorText = await res.text().catch(() => "");
-        console.error(`⚠️ Spotify API Playback Error (${res.status}):`, errorText);
-        if (res.status === 403) {
-          setIsPremiumError(true);
-        } else if (res.status === 401) {
-          localStorage.removeItem(SPOTIFY_TOKEN_KEY);
-          setToken(null);
-        }
-      }
+      // STEP 2: startPlaybackWithTrack (リピート OFF ＋ device_id 明示再生)
+      await startPlaybackWithTrack(nextTrack.uri, deviceId);
+      console.log(`🟢 [Spotify Hybrid Play] Playing: ${nextTrack.name} by ${nextTrack.artist}`);
+      setHasRadioStarted(true);
+      setIsPremiumError(false);
     } catch (err) {
       console.error("❌ Skip Exception:", err);
     }
@@ -769,14 +785,22 @@ export default function RadioPlayer() {
 
           setIsPlaying(!state.paused);
 
-          // 曲が最後まで流れて自動終了したかを検知して次の曲へ
+          // ⏭️ 4. 曲終了時の自動送り重複防止ガード (isHandlingEndRef)
           if (
             state.position === 0 &&
             state.paused &&
             state.track_window?.previous_tracks?.length > 0
           ) {
-            console.log("📻 [Auto-Radio] 曲が終了しました。次の曲を自動再生します...");
-            handleSkip();
+            if (!isHandlingEndRef.current) {
+              isHandlingEndRef.current = true;
+              console.log("📻 [Auto-Radio] Track finished. Auto skipping to next...");
+
+              handleSkip().then(() => {
+                setTimeout(() => {
+                  isHandlingEndRef.current = false;
+                }, 2000);
+              });
+            }
           }
         }
       });
