@@ -47,16 +47,24 @@ export default function RootLayout({
           dangerouslySetInnerHTML={{
             __html: `
               if ('serviceWorker' in navigator) {
-                window.addEventListener('load', function() {
-                  navigator.serviceWorker.register('/sw.js').then(
-                    function(registration) {
-                      console.log('🟢 PWA ServiceWorker registered with scope:', registration.scope);
-                    },
-                    function(err) {
-                      console.warn('⚠️ PWA ServiceWorker registration failed:', err);
+                if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+                  navigator.serviceWorker.getRegistrations().then(function(registrations) {
+                    for (let registration of registrations) {
+                      registration.unregister();
                     }
-                  );
-                });
+                  });
+                } else {
+                  window.addEventListener('load', function() {
+                    navigator.serviceWorker.register('/sw.js').then(
+                      function(registration) {
+                        console.log('🟢 PWA ServiceWorker registered:', registration.scope);
+                      },
+                      function(err) {
+                        console.warn('⚠️ PWA ServiceWorker registration failed:', err);
+                      }
+                    );
+                  });
+                }
               }
             `,
           }}

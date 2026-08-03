@@ -814,7 +814,8 @@ export default function RadioPlayer() {
     if (!isMounted) return;
 
     const attemptAutoPlay = async () => {
-      if (autoStartedRef.current || !deviceId) return;
+      const effectiveDeviceId = deviceId || (typeof window !== "undefined" ? (window as any)._lastKnownDeviceId : null);
+      if (autoStartedRef.current || !effectiveDeviceId) return;
 
       const savedToken = getStoredAccessToken() || token;
       if (!savedToken) return;
@@ -823,8 +824,7 @@ export default function RadioPlayer() {
       console.log("📻 [Auto-Radio] 起動。前回のセッションを確認中...");
 
       try {
-        // 時間帯適応トラックプールをあらかじめ準備
-        const { pool, timeLabel } = await fetchHybridTrackPool(savedToken);
+        const { pool, timeLabel } = await fetch40_30_30TrackPool(savedToken);
         setTrackPool(pool);
         setActiveTimeLabel(timeLabel);
 
@@ -832,7 +832,6 @@ export default function RadioPlayer() {
           await playerRef.current.activateElement();
         }
 
-        // 前回の再生状態（トラック情報）が存在するかチェック
         if (playerRef.current && typeof playerRef.current.getCurrentState === "function") {
           const state = await playerRef.current.getCurrentState();
 
@@ -841,38 +840,25 @@ export default function RadioPlayer() {
             await playerRef.current.resume();
             setHasRadioStarted(true);
             setIsPremiumError(false);
+            maintainUpcomingQueue(effectiveDeviceId);
             return;
           }
         }
 
-        // 前回の状態がない場合（初回起動時等）のみ新曲を再生
         if (pool.length > 0) {
-          const randomIndex = Math.floor(Math.random() * pool.length);
-          const firstTrack = pool[randomIndex];
+          const firstTrack = pool[0];
           setHistoryUris([firstTrack.uri]);
           setHistoryArtists([firstTrack.artist]);
+          setPlayedUris([firstTrack.uri]);
 
-          // 1. Transfer Playback
-          await fetch("https://api.spotify.com/v1/me/player", {
-            method: "PUT",
-            headers: {
-              Authorization: `Bearer ${savedToken}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              device_ids: [deviceId],
-              play: true,
-            }),
-          });
-
-          // 2. Play first track with repeat disabled
-          await startPlaybackWithTrack(firstTrack.uri, deviceId);
+          await startPlaybackWithTrack(firstTrack.uri, effectiveDeviceId);
           console.log(`🟢 [Auto-Radio] 新規トラックの再生がスタートしました: ${firstTrack.name}`);
           setHasRadioStarted(true);
           setIsPremiumError(false);
+          maintainUpcomingQueue(effectiveDeviceId);
         }
       } catch (err) {
-        console.warn("⚠️ Autoplay blocked by browser. Waiting for first user touch...");
+        console.warn("⚠️ Autoplay blocked by browser. Waiting for first user click...");
       }
     };
 
@@ -910,7 +896,7 @@ export default function RadioPlayer() {
     const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "387ae192a82d41e4abb7acf114110694";
     const redirectUri = getRedirectUri();
 
-    const scope = [
+    const scopeList = [
       "streaming",
       "user-read-email",
       "user-read-private",
@@ -918,20 +904,28 @@ export default function RadioPlayer() {
       "user-read-playback-state",
       "user-library-read",
       "user-top-read",
-    ].join(" ");
+    ];
 
-    const authUrl = new URL("https://accounts.spotify.com/authorize");
-    authUrl.search = new URLSearchParams({
+    const scopeParam = scopeList.join(" ");
+
+    const params = new URLSearchParams({
       response_type: "code",
       client_id: clientId,
-      scope: scope,
+      scope: scopeParam,
       code_challenge_method: "S256",
       code_challenge: codeChallenge,
       redirect_uri: redirectUri,
       show_dialog: "true",
-    }).toString();
+    });
 
-    window.location.href = authUrl.toString();
+    // Enforce %20 encoding for scope spaces according to Spotify OAuth spec
+    const authUrl = `https://accounts.spotify.com/authorize?${params.toString().replace(/\+/g, "%20")}`;
+
+    console.log("🔑 [Spotify Auth Redirect] Client ID:", clientId);
+    console.log("🔗 [Spotify Auth Redirect] Redirect URI:", redirectUri);
+    console.log("🌐 [Spotify Auth Redirect] Authorize URL:", authUrl);
+
+    window.location.href = authUrl;
   };
 
   // 🔇 3. スマホ対応ミュート（Pause/Resume フォールバック）(handleToggleMute)
@@ -984,13 +978,53 @@ export default function RadioPlayer() {
   }, [nowPlaying?.id, deviceId]);
 
   const handleStartRadio = async () => {
-    if (!playerRef.current || !deviceId) {
+    const effectiveDeviceId = deviceId || (typeof window !== "undefined" ? (window as any)._lastKnownDeviceId : null);
+
+    if (!playerRef.current || !effectiveDeviceId) {
       console.warn("⚠️ Player or Device ID not ready yet.");
       return;
     }
 
-    setHasRadioStarted(true);
-    await handleManualSkip();
+    try {
+      console.log("📻 [Radio Start] User clicked to start playback...");
+
+      if (typeof playerRef.current.activateElement === "function") {
+        await playerRef.current.activateElement();
+      }
+
+      setHasRadioStarted(true);
+
+      // 1. Check if already playing or paused in SDK state
+      if (typeof playerRef.current.getCurrentState === "function") {
+        const state = await playerRef.current.getCurrentState();
+        if (state && state.track_window?.current_track) {
+          console.log("📻 [Radio Start] Resuming existing track:", state.track_window.current_track.name);
+          await playerRef.current.resume();
+          maintainUpcomingQueue(effectiveDeviceId);
+          return;
+        }
+      }
+
+      // 2. Initial track selection & playback start
+      const savedToken = getStoredAccessToken() || token;
+      let pool = trackPool;
+      if (!pool || pool.length === 0) {
+        const { pool: newPool } = await fetch40_30_30TrackPool(savedToken || undefined, playedUris);
+        pool = newPool;
+        setTrackPool(newPool);
+      }
+
+      const firstTrack = pool[0] || SEED_LIBRARY[0];
+      console.log(`📻 [Radio Start] Starting initial track: ${firstTrack.name} by ${firstTrack.artist}`);
+      setHistoryUris([firstTrack.uri]);
+      setHistoryArtists([firstTrack.artist]);
+      setPlayedUris([firstTrack.uri]);
+
+      await startPlaybackWithTrack(firstTrack.uri, effectiveDeviceId);
+      await maintainUpcomingQueue(effectiveDeviceId);
+    } catch (err) {
+      console.error("Failed to start radio playback:", err);
+    }
   };
 
   // 📺 ⏱️ 経過時間更新 ＆ 画面表示（UI）の 100% 受動同期 (player_state_changed 監視)
