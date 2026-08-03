@@ -757,6 +757,7 @@ export default function RadioPlayer() {
 
   // シングルトン playerRef 管理
   const playerRef = useRef<any>(null);
+  const initSpotifyPlayerRef = useRef<(() => Promise<void>) | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationFrameIdRef = useRef<number | null>(null);
 
@@ -777,7 +778,7 @@ export default function RadioPlayer() {
         localStorage.getItem("spotify_code_verifier") ||
         localStorage.getItem("drivetuner_code_verifier");
       const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "387ae192a82d41e4abb7acf114110694";
-      const redirectUri = getRedirectUri();
+      const redirectUri = localStorage.getItem("spotify_redirect_uri") || getRedirectUri();
 
       fetch("https://accounts.spotify.com/api/token", {
         method: "POST",
@@ -895,6 +896,7 @@ export default function RadioPlayer() {
 
     const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || "387ae192a82d41e4abb7acf114110694";
     const redirectUri = getRedirectUri();
+    window.localStorage.setItem("spotify_redirect_uri", redirectUri);
 
     const scopeList = [
       "streaming",
@@ -978,10 +980,27 @@ export default function RadioPlayer() {
   }, [nowPlaying?.id, deviceId]);
 
   const handleStartRadio = async () => {
-    const effectiveDeviceId = deviceId || (typeof window !== "undefined" ? (window as any)._lastKnownDeviceId : null);
+    let effectiveDeviceId = deviceId || (typeof window !== "undefined" ? (window as any)._lastKnownDeviceId : null);
+    const savedToken = getStoredAccessToken() || token;
+
+    if (!savedToken) {
+      console.warn("⚠️ No access token available. Redirecting to login...");
+      handleLogin();
+      return;
+    }
+
+    // Player/Device ID 未準備時は自動再接続
+    if (!playerRef.current || !effectiveDeviceId) {
+      console.log("📻 Player or Device ID not ready yet. Re-initializing Spotify Web SDK...");
+      if (typeof window !== "undefined" && window.Spotify && window.Spotify.Player && initSpotifyPlayerRef.current) {
+        initSpotifyPlayerRef.current();
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        effectiveDeviceId = deviceId || (typeof window !== "undefined" ? (window as any)._lastKnownDeviceId : null);
+      }
+    }
 
     if (!playerRef.current || !effectiveDeviceId) {
-      console.warn("⚠️ Player or Device ID not ready yet.");
+      console.warn("⚠️ Player or Device ID could not be initialized.");
       return;
     }
 
@@ -1006,10 +1025,9 @@ export default function RadioPlayer() {
       }
 
       // 2. Initial track selection & playback start
-      const savedToken = getStoredAccessToken() || token;
       let pool = trackPool;
       if (!pool || pool.length === 0) {
-        const { pool: newPool } = await fetch40_30_30TrackPool(savedToken || undefined, playedUris);
+        const { pool: newPool } = await fetch40_30_30TrackPool(savedToken, playedUris);
         pool = newPool;
         setTrackPool(newPool);
       }
@@ -1030,22 +1048,6 @@ export default function RadioPlayer() {
   // 📺 ⏱️ 経過時間更新 ＆ 画面表示（UI）の 100% 受動同期 (player_state_changed 監視)
   useEffect(() => {
     if (!isMounted || !token) return;
-
-    const loadSDK = () => {
-      if (window.Spotify && window.Spotify.Player) {
-        initSpotifyPlayer();
-        return;
-      }
-
-      window.onSpotifyWebPlaybackSDKReady = () => {
-        initSpotifyPlayer();
-      };
-
-      const script = document.createElement("script");
-      script.src = "https://sdk.scdn.co/spotify-player.js";
-      script.async = true;
-      document.body.appendChild(script);
-    };
 
     const initSpotifyPlayer = async () => {
       if (playerRef.current) return;
@@ -1134,7 +1136,19 @@ export default function RadioPlayer() {
         console.log("🔄 Attempting automatic re-authentication due to auth error...");
 
         const newToken = await refreshAccessToken();
-        if (!newToken) {
+        if (newToken) {
+          console.log("🟢 Token refreshed! Re-initializing Spotify Player with fresh token...");
+          setToken(newToken);
+          if (playerRef.current && typeof playerRef.current.disconnect === "function") {
+            try {
+              playerRef.current.disconnect();
+            } catch (e) {}
+            playerRef.current = null;
+          }
+          setTimeout(() => {
+            initSpotifyPlayerRef.current?.();
+          }, 300);
+        } else {
           purgeStoredTokens();
           setToken(null);
           setHasRadioStarted(false);
@@ -1150,6 +1164,24 @@ export default function RadioPlayer() {
       });
 
       player.connect();
+    };
+
+    initSpotifyPlayerRef.current = initSpotifyPlayer;
+
+    const loadSDK = () => {
+      if (window.Spotify && window.Spotify.Player) {
+        initSpotifyPlayer();
+        return;
+      }
+
+      window.onSpotifyWebPlaybackSDKReady = () => {
+        initSpotifyPlayer();
+      };
+
+      const script = document.createElement("script");
+      script.src = "https://sdk.scdn.co/spotify-player.js";
+      script.async = true;
+      document.body.appendChild(script);
     };
 
     loadSDK();
