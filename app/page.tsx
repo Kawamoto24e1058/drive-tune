@@ -524,40 +524,49 @@ const fetchFailSafeRadioPool = async (
       return result;
     };
 
-    // --- A. 🌟 ダブルクオーテーション無しのプレーンアーティスト検索 (/v1/search) (約 60% ➔ 15曲) ---
+    // --- A. 🌟 400 エラーを回避したアーティスト名曲検索 (/v1/search) (約 50% ➔ 12曲) ---
+    // 🔥 重要: market=JP を削除し、encodeURIComponent を使用
     const selectedArtists = shuffleArray(FAMOUS_ERA_ARTISTS).slice(0, 4);
     console.log(`📻 [Fail-Safe Search] Searching famous artists: ${selectedArtists.join(", ")}`);
 
     let rawFamousSearch: any[] = [];
 
     for (const artistName of selectedArtists) {
-      // 🔥 ダブルクオーテーション (") を除去して q: artistName で安全検索
-      const searchParams = new URLSearchParams({
-        q: artistName,
-        type: "track",
-        market: "JP",
-        limit: "15",
-        offset: Math.floor(Math.random() * 2).toString(),
-      });
+      const encodedQuery = encodeURIComponent(artistName);
+      const offset = Math.floor(Math.random() * 2);
 
+      // market=JP を指定せず、トークンから自動判定させる
       const searchRes = await fetchWithAuth(
-        `https://api.spotify.com/v1/search?${searchParams.toString()}`
+        `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=15&offset=${offset}`
       );
+
       if (searchRes.ok) {
         const data = await searchRes.json();
         if (data.tracks?.items) {
           rawFamousSearch.push(...data.tracks.items);
         }
       } else {
-        console.warn(`Search failed for ${artistName}:`, searchRes.status);
+        console.warn(`Search failed for ${artistName}: status ${searchRes.status}`);
       }
     }
 
-    const famousTracks = filterAndNormalize(rawFamousSearch, 15);
+    const famousTracks = filterAndNormalize(rawFamousSearch, 12);
 
-    // --- B. 💚 ユーザーの「ライブラリ保存曲 (/v1/me/tracks)」 (約 25% ➔ 6曲) ---
+    // --- B. 🕰️ 昔聴いていた長期トップトラック (/v1/me/top/tracks?time_range=long_term) (約 25% ➔ 6曲) ---
+    let rawNostalgicTracks: any[] = [];
+    const longTopRes = await fetchWithAuth(
+      "https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=25"
+    );
+    if (longTopRes.ok) {
+      const longData = await longTopRes.json();
+      if (longData.items) rawNostalgicTracks = longData.items;
+    }
+
+    const nostalgicTracks = filterAndNormalize(rawNostalgicTracks, 6);
+
+    // --- C. 💚 ライブラリ保存曲 (/v1/me/tracks) ＆ 直近トップトラック (約 25% ➔ 6曲) ---
     let rawSavedTracks: any[] = [];
-    const savedRes = await fetchWithAuth("https://api.spotify.com/v1/me/tracks?limit=30");
+    const savedRes = await fetchWithAuth("https://api.spotify.com/v1/me/tracks?limit=25");
     if (savedRes.ok) {
       const savedData = await savedRes.json();
       if (savedData.items) {
@@ -567,29 +576,19 @@ const fetchFailSafeRadioPool = async (
 
     const savedTracks = filterAndNormalize(rawSavedTracks, 6);
 
-    // --- C. 👤 ユーザーの「トップトラック (/v1/me/top/tracks)」 (約 15% ➔ 4曲) ---
-    let rawTopTracks: any[] = [];
-    const topRes = await fetchWithAuth(
-      "https://api.spotify.com/v1/me/top/tracks?time_range=medium_term&limit=20"
-    );
-    if (topRes.ok) {
-      const topData = await topRes.json();
-      if (topData.items) {
-        rawTopTracks = topData.items;
-      }
+    // --- D. 統合 ＆ シャッフル (万が一少ない場合のセーフティ含む) ---
+    let combined = [...famousTracks, ...nostalgicTracks, ...savedTracks];
+
+    // 万が一 15 曲未満の場合は、長期トップトラックから全枠補填
+    if (combined.length < 15 && rawNostalgicTracks.length > 0) {
+      const extraTracks = filterAndNormalize(rawNostalgicTracks, 20);
+      combined = [...combined, ...extraTracks];
     }
 
-    const topTracks = filterAndNormalize(rawTopTracks, 4);
-
-    // --- D. 統合 ＆ シャッフル ---
-    const finalPool = shuffleArray([
-      ...famousTracks, // 15曲 (有名アーティスト名曲)
-      ...savedTracks,  // 6曲  (お気に入り保存曲)
-      ...topTracks,    // 4曲  (トップトラック)
-    ]);
+    const finalPool = shuffleArray(combined);
 
     console.log(
-      `🌐 [Fail-Safe Pool Built] Total: ${finalPool.length} (FamousHits: ${famousTracks.length}, Saved: ${savedTracks.length}, PersonalTop: ${topTracks.length})`
+      `🌐 [Fail-Safe Pool Built] Total: ${finalPool.length} (FamousHits: ${famousTracks.length}, Nostalgic: ${nostalgicTracks.length}, Saved: ${savedTracks.length})`
     );
 
     return {
