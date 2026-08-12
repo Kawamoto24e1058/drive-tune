@@ -371,47 +371,92 @@ export interface TimeAudioParams {
   genres: string[];
 }
 
-const getTimeBasedDiscoveryConfig = () => {
-  const hour = new Date().getHours();
+const PERSISTENT_HISTORY_KEY = "drivetune_played_history_v1";
 
-  if (hour >= 5 && hour < 10) {
-    return {
-      label: "Morning Discovery 🌅",
-      genres: ["pop", "j-pop", "acoustic", "rock"],
-      targetEnergy: 0.65,
-      targetValence: 0.8,
-    };
-  } else if (hour >= 10 && hour < 17) {
-    return {
-      label: "Daytime Highway ☀️",
-      genres: ["pop", "rock", "j-pop", "dance"],
-      targetEnergy: 0.85,
-      targetValence: 0.75,
-    };
-  } else if (hour >= 17 && hour < 22) {
-    return {
-      label: "Evening Drive <ctrl42>",
-      genres: ["r-n-b", "chill", "j-pop", "soul"],
-      targetEnergy: 0.55,
-      targetValence: 0.5,
-    };
-  } else {
-    return {
-      label: "Late Night Lounge 🌙",
-      genres: ["chill", "r-n-b", "acoustic", "jazz"],
-      targetEnergy: 0.35,
-      targetValence: 0.35,
-    };
+// 永続化された履歴を取得
+const getPersistentPlayedUris = (): string[] => {
+  if (typeof window === "undefined") return [];
+  try {
+    const saved = localStorage.getItem(PERSISTENT_HISTORY_KEY);
+    return saved ? JSON.parse(saved) : [];
+  } catch (e) {
+    return [];
   }
 };
 
+// 新しい再生曲を保存 (直近 200 件まで保持)
+const savePersistentPlayedUri = (uri: string) => {
+  if (typeof window === "undefined" || !uri) return;
+  try {
+    const history = getPersistentPlayedUris();
+    if (!history.includes(uri)) {
+      const updated = [uri, ...history].slice(0, 200); // 最大200曲まで保持
+      localStorage.setItem(PERSISTENT_HISTORY_KEY, JSON.stringify(updated));
+    }
+  } catch (e) {
+    console.error("Failed to save played history:", e);
+  }
+};
+
+// 🎲 2. 時間帯別キーワード ＆ 年代ガチャの定義 (getRandomSearchConfig)
+const getRandomSearchConfig = () => {
+  const hour = new Date().getHours();
+
+  // 時間帯ごとの多角的な検索テーマ・プール
+  const morningPool = [
+    { q: "朝 爽やか J-POP", year: "2015-2026", label: "Morning Fresh Hits 🌅" },
+    { q: "爽快 ドライブ 名曲", year: "2000-2020", label: "Morning Drive Classics 🌅" },
+    { q: "アコースティック 邦楽", year: "2010-2026", label: "Morning Acoustic Chill 🌅" },
+    { q: "目覚め ポップス", year: "2018-2026", label: "Morning Wakeup Pop 🌅" },
+  ];
+
+  const daytimePool = [
+    { q: "ドライブ 鉄板 J-POP", year: "2010-2026", label: "Daytime Drive Hits ☀️" },
+    { q: "邦楽 ロック フェス", year: "2005-2025", label: "Daytime Festival Anthem ☀️" },
+    { q: "平成 アニメソング 名曲", year: "1998-2015", label: "Daytime Nostalgic Anime ☀️" },
+    { q: "令和 ヒットチャート", year: "2020-2026", label: "Daytime Top Hits ☀️" },
+    { q: "CMソング 定番", year: "2000-2020", label: "Daytime Commercial Classics ☀️" },
+    { q: "ドライブ 洋楽 ポップス", year: "2010-2026", label: "Daytime Global Highway ☀️" },
+  ];
+
+  const eveningPool = [
+    { q: "夕暮れ エモい J-POP", year: "2015-2026", label: "Evening Emo Sunset 🌆" },
+    { q: "シティポップ 定番", year: "1980-2025", label: "Evening City Pop Vibes 🌆" },
+    { q: "夜ドライブ 泣ける 名曲", year: "2000-2020", label: "Evening Emotional Drive 🌆" },
+    { q: "R&B 邦楽 メロウ", year: "2010-2026", label: "Evening Mellow R&B 🌆" },
+  ];
+
+  const nightPool = [
+    { q: "深夜ドライブ 定番", year: "2010-2026", label: "Late Night Drive 🌙" },
+    { q: "ローファイ チル 邦楽", year: "2018-2026", label: "Late Night Lo-Fi Chill 🌙" },
+    { q: "深夜 アコースティック", year: "2000-2025", label: "Late Night Acoustic Lounge 🌙" },
+    { q: "夜 アニメ サントラ", year: "2005-2026", label: "Late Night Anime Chill 🌙" },
+  ];
+
+  let activePool = daytimePool;
+  if (hour >= 5 && hour < 10) activePool = morningPool;
+  else if (hour >= 17 && hour < 22) activePool = eveningPool;
+  else if (hour < 5 || hour >= 22) activePool = nightPool;
+
+  // プールからランダムに 1 つ選出
+  const selected = activePool[Math.floor(Math.random() * activePool.length)];
+  return {
+    query: `${selected.q} year:${selected.year}`,
+    label: selected.label,
+    targetEnergy: hour >= 10 && hour < 17 ? 0.8 : 0.5,
+  };
+};
+
+const getTimeBasedFamousConfig = getRandomSearchConfig;
+const getTimeBasedDiscoveryConfig = getRandomSearchConfig;
+
 const getTimeBasedParams = () => {
-  const cfg = getTimeBasedDiscoveryConfig();
+  const cfg = getRandomSearchConfig();
   return {
     timeLabel: cfg.label,
-    genres: cfg.genres,
+    genres: ["pop", "j-pop"],
     targetEnergy: cfg.targetEnergy,
-    targetValence: cfg.targetValence,
+    targetValence: 0.6,
     targetDanceability: 0.6,
   };
 };
@@ -425,144 +470,115 @@ const shuffleArray = <T,>(array: T[]): T[] => {
   return arr;
 };
 
-// 🎵 1. 新・黄金比 30 : 35 : 35 ✕ 広域ディスカバリー強化 (fetch30_35_35TrackPool)
-const fetch30_35_35TrackPool = async (
+// 📻 3. 日またぎ自動除外付き選曲エンジンの更新 (fetchFamousBalancedTrackPool)
+const fetchFamousBalancedTrackPool = async (
   _token?: string,
-  playedUris: string[] = []
+  currentSessionUris: string[] = []
 ): Promise<{ pool: TrackItem[]; timeLabel: string }> => {
   try {
-    const config = getTimeBasedDiscoveryConfig();
-    console.log(`🌐 [Radio Engine 30:35:35] Dynamic Pool Generation for: ${config.label}`);
+    // 🌟 日またぎ履歴 (localStorage) + 今のセッション再生済み URI を完全合体して除外対象に設定
+    const persistentHistory = getPersistentPlayedUris();
+    const usedUris = new Set<string>([...persistentHistory, ...currentSessionUris]);
 
-    const normalizeTracks = (items: any[]): TrackItem[] => {
-      if (!Array.isArray(items)) return [];
-      return items
-        .map((item: any) => {
-          const t = item.track || item;
-          return {
+    const searchConfig = getRandomSearchConfig();
+    console.log(
+      `📻 [Cross-Day Engine] Active Search Query: "${searchConfig.query}" | Excluded History: ${usedUris.size} tracks`
+    );
+
+    const artistCountMap = new Map<string, number>();
+
+    const addControlledTracks = (rawTracks: any[], maxCount: number, minPopularity: number = 0): TrackItem[] => {
+      const result: TrackItem[] = [];
+      const shuffled = shuffleArray(rawTracks);
+
+      for (const item of shuffled) {
+        if (result.length >= maxCount) break;
+
+        const t = item.track || item;
+        if (!t || !t.uri) continue;
+
+        const popularity = t.popularity ?? 50;
+        if (popularity < minPopularity) continue;
+
+        const mainArtist = t.artists?.[0];
+        const artistId = mainArtist?.id || mainArtist?.name || "unknown";
+        const currentArtistCount = artistCountMap.get(artistId) || 0;
+
+        // 🌟 過去数日間に再生された曲は完全に排除！ 同一アーティストは最大2曲まで
+        if (!usedUris.has(t.uri) && currentArtistCount < 2) {
+          usedUris.add(t.uri);
+          artistCountMap.set(artistId, currentArtistCount + 1);
+
+          result.push({
             uri: t.uri,
             name: t.name,
             artist: t.artists ? t.artists.map((a: any) => a.name).join(", ") : "Unknown Artist",
-            artistId: t.artists && t.artists[0] ? t.artists[0].id : undefined,
+            artistId: mainArtist?.id,
             coverUrl: t.album?.images?.[0]?.url || FALLBACK_COVER_URL,
-            popularity: t.popularity || 50,
-          };
-        })
-        .filter((t) => t.uri && !playedUris.includes(t.uri));
+            popularity: popularity,
+          });
+        }
+      }
+      return result;
     };
 
-    // --- A. 🔥 最近聴いている曲 (30% ➔ 9曲) ---
+    // --- A. 🔥 最近聴いている曲 (最大 20% ➔ 5曲に制限して新鮮さを重視) ---
+    let rawRecent: any[] = [];
     const [recentRes, shortTopRes] = await Promise.all([
-      fetchWithAuth("https://api.spotify.com/v1/me/player/recently-played?limit=30"),
-      fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=30"),
+      fetchWithAuth("https://api.spotify.com/v1/me/player/recently-played?limit=20"),
+      fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=20"),
     ]);
+    if (recentRes.ok) rawRecent.push(...((await recentRes.json()).items || []));
+    if (shortTopRes.ok) rawRecent.push(...((await shortTopRes.json()).items || []));
 
-    let recentTracks: TrackItem[] = [];
-    if (recentRes.ok) {
-      recentTracks.push(...normalizeTracks((await recentRes.json()).items || []));
-    }
-    if (shortTopRes.ok) {
-      recentTracks.push(...normalizeTracks((await shortTopRes.json()).items || []));
-    }
+    const selectedRecent = addControlledTracks(rawRecent, 5, 0);
 
-    const selectedRecent = shuffleArray(recentTracks).slice(0, 9);
-    const recentArtistIds = selectedRecent.map((t) => t.artistId).filter((id): id is string => Boolean(id));
-
-    // --- B. 🕰️ 昔聴いていた ＋ 世代ヒット曲 (35% ➔ 10曲) ---
-    let nostalgiaTracks: TrackItem[] = [];
-    const longTopRes = await fetchWithAuth(
-      "https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=30"
+    // --- B. 🌟 日替わり検索 ＆ 大オフセット有名曲 (約 50% ➔ 15曲) ---
+    // オフセットを 0~80 まで大きく散らして毎回違う曲群を発掘
+    const randomOffset = Math.floor(Math.random() * 80);
+    const searchRes = await fetchWithAuth(
+      `https://api.spotify.com/v1/search?q=${encodeURIComponent(searchConfig.query)}&type=track&limit=40&offset=${randomOffset}`
     );
-    if (longTopRes.ok) {
-      const items = (await longTopRes.json()).items || [];
-      const normalizedLong = normalizeTracks(items);
-      nostalgiaTracks.push(...normalizedLong.filter((t) => (t.popularity || 100) < 80));
+
+    let rawFamous: any[] = [];
+    if (searchRes.ok) {
+      const searchData = await searchRes.json();
+      if (searchData.tracks?.items) rawFamous.push(...searchData.tracks.items);
     }
 
-    const eraSearchRes = await fetchWithAuth(
-      `https://api.spotify.com/v1/search?q=${encodeURIComponent("J-POP 2010年代 トレンド")}&type=track&limit=20`
+    const selectedFamous = addControlledTracks(rawFamous, 15, 55);
+
+    // --- C. ✨ 好みに寄せた未知の曲 (約 30% ➔ 10曲) ---
+    const broadGenres = ["j-pop", "pop", "rock", "anime", "dance", "acoustic", "chill", "r-n-b"];
+    const randGenre = broadGenres[Math.floor(Math.random() * broadGenres.length)];
+
+    const recRes = await fetchWithAuth(
+      `https://api.spotify.com/v1/recommendations?limit=30&seed_genres=${randGenre}&target_energy=${searchConfig.targetEnergy}`
     );
-    if (eraSearchRes.ok) {
-      const eraData = await eraSearchRes.json();
-      if (eraData.tracks?.items) {
-        nostalgiaTracks.push(...normalizeTracks(eraData.tracks.items));
-      }
-    }
+    let rawDiscovery: any[] = [];
+    if (recRes.ok) rawDiscovery.push(...((await recRes.json()).tracks || []));
 
-    const selectedNostalgia = shuffleArray(nostalgiaTracks).slice(0, 10);
+    const selectedDiscovery = addControlledTracks(rawDiscovery, 10, 40);
 
-    // --- C. ✨ 知らないが好みに合っていそうな曲 (35% ➔ 10曲) ---
-    const knownArtistIds = new Set(
-      [...selectedRecent, ...selectedNostalgia].map((t) => t.artistId).filter((id): id is string => Boolean(id))
-    );
-    const knownUris = new Set([...recentTracks, ...nostalgiaTracks].map((t) => t.uri));
-
-    const recParams = new URLSearchParams({
-      limit: "40",
-      max_popularity: "80", // Popularity <= 80 (知名度のある曲も許容)
-      target_energy: config.targetEnergy.toString(),
-      target_valence: config.targetValence.toString(),
-    });
-
-    if (recentArtistIds.length > 0) {
-      const sampledArtists = shuffleArray(recentArtistIds).slice(0, 2);
-      recParams.append("seed_artists", sampledArtists.join(","));
-    }
-
-    const seedTrack = selectedRecent[0]?.uri.split(":").pop();
-    if (seedTrack) {
-      recParams.append("seed_tracks", seedTrack);
-    }
-
-    const randomGenre = config.genres[Math.floor(Math.random() * config.genres.length)];
-    recParams.append("seed_genres", randomGenre);
-
-    const recRes = await fetchWithAuth(`https://api.spotify.com/v1/recommendations?${recParams.toString()}`);
-    let tasteMatchedNewTracks: TrackItem[] = [];
-
-    if (recRes.ok) {
-      const recData = await recRes.json();
-      const filtered = (recData.tracks || []).filter((t: any) => {
-        const isKnownTrack = knownUris.has(t.uri);
-        const isKnownArtist = t.artists ? t.artists.some((a: any) => knownArtistIds.has(a.id)) : false;
-        return !isKnownTrack && !isKnownArtist;
-      });
-      tasteMatchedNewTracks = normalizeTracks(filtered);
-    }
-
-    if (tasteMatchedNewTracks.length < 5) {
-      const fallbackRes = await fetchWithAuth(
-        `https://api.spotify.com/v1/recommendations?limit=20&seed_genres=${config.genres[0]}&max_popularity=80`
-      );
-      if (fallbackRes.ok) {
-        const fallbackData = await fallbackRes.json();
-        const fallbackFiltered = (fallbackData.tracks || []).filter((t: any) => !knownUris.has(t.uri));
-        tasteMatchedNewTracks.push(...normalizeTracks(fallbackFiltered));
-      }
-    }
-
-    const selectedNew = shuffleArray(tasteMatchedNewTracks).slice(0, 10);
-
+    // --- D. 統合して最終シャッフル ---
     const finalPool = shuffleArray([
-      ...selectedRecent,    // 9曲 (30%)
-      ...selectedNostalgia, // 10曲 (35%)
-      ...selectedNew,       // 10曲 (35%)
+      ...selectedRecent,    // 5曲
+      ...selectedFamous,    // 15曲
+      ...selectedDiscovery, // 10曲
     ]);
 
-    console.log(
-      `🌐 [Radio Pool Built] Total: ${finalPool.length} (Recent: ${selectedRecent.length}, Nostalgia/Era: ${selectedNostalgia.length}, MatchedNew: ${selectedNew.length}) for ${config.label}`
-    );
-
-    return { pool: finalPool.length > 0 ? finalPool : SEED_LIBRARY, timeLabel: config.label };
+    console.log(`🌐 [Famous Cross-Day Pool] Generated ${finalPool.length} fresh tracks for ${searchConfig.label}.`);
+    return { pool: finalPool.length > 0 ? finalPool : SEED_LIBRARY, timeLabel: searchConfig.label };
   } catch (err) {
-    console.error("Failed to fetch dynamic track pool:", err);
-    return { pool: SEED_LIBRARY, timeLabel: getTimeBasedDiscoveryConfig().label };
+    console.error("Failed to fetch famous cross-day track pool:", err);
+    return { pool: SEED_LIBRARY, timeLabel: "Drive Radio 📻" };
   }
 };
 
-const fetch40_30_30TrackPool = fetch30_35_35TrackPool;
-const fetch60_20_20TrackPool = fetch30_35_35TrackPool;
-const fetchHybridTrackPool = fetch30_35_35TrackPool;
+const fetch30_35_35TrackPool = fetchFamousBalancedTrackPool;
+const fetch40_30_30TrackPool = fetchFamousBalancedTrackPool;
+const fetch60_20_20TrackPool = fetchFamousBalancedTrackPool;
+const fetchHybridTrackPool = fetchFamousBalancedTrackPool;
 
 // 🎵 2. クールダウン（重複・連続再生防止）付き選曲ロジック
 const selectNextTrackWithCooldown = (
@@ -999,13 +1015,14 @@ export default function RadioPlayer() {
 
   const handleManualSkip = handleSkip;
 
-  // 🌟 曲が新しく再生開始されたタイミングで常にキュー補充チェックを走らせる
+  // 🌟 曲が新しく再生開始されたタイミングで常にキュー補充チェック ＆ 日またぎ履歴保存
   useEffect(() => {
     const effectiveDeviceId = deviceId || (typeof window !== "undefined" ? (window as any)._lastKnownDeviceId : null);
     if (nowPlaying?.id && effectiveDeviceId) {
       if (nowPlaying.uri) {
         queuedUrisSetRef.current.add(nowPlaying.uri);
         playedHistoryRef.current.add(nowPlaying.uri);
+        savePersistentPlayedUri(nowPlaying.uri);
       }
       console.log(`🎵 [Track Changed] Now playing: ${nowPlaying.title}. Maintaining queue...`);
       maintainRadioQueue(effectiveDeviceId);
