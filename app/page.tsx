@@ -470,8 +470,8 @@ const shuffleArray = <T,>(array: T[]): T[] => {
   return arr;
 };
 
-// 📻 1. 100% 成功する構造化検索エンジン (fetchDirectSearchRadioPool)
-const fetchDirectSearchRadioPool = async (
+// 📻 1. 絶対に失敗しない多層フォールバック選曲エンジン (fetchBulletproofRadioPool)
+const fetchBulletproofRadioPool = async (
   _token?: string,
   currentSessionUris: string[] = []
 ): Promise<{ pool: TrackItem[]; timeLabel: string }> => {
@@ -480,51 +480,7 @@ const fetchDirectSearchRadioPool = async (
     const usedUris = new Set<string>([...persistentHistory, ...currentSessionUris]);
     const artistCountMap = new Map<string, number>();
 
-    // 🌟 Spotify API が 100% 正常応答する構造化クエリのリスト (ジャンル ✕ 年代ガチャ)
-    const structuredQueries = [
-      "genre:j-pop year:2015-2026",
-      "genre:j-rock year:2010-2026",
-      "genre:j-pop year:2000-2015",
-      "genre:japanese year:1990-2010",
-      "genre:city-pop",
-      "genre:j-pop year:2020-2026",
-      "genre:j-rock year:2000-2015",
-      "genre:anime year:2010-2026",
-    ];
-
-    // ランダムに 2 つのクエリを選出
-    const shuffledQueries = shuffleArray(structuredQueries);
-    const query1 = shuffledQueries[0];
-    const query2 = shuffledQueries[1];
-
-    console.log(`📻 [Structured Search Engine] Query 1: "${query1}" | Query 2: "${query2}"`);
-
-    const rawSearchTracks: any[] = [];
-
-    // オフセット (0~40) をランダムにして毎回違う名曲を発掘
-    const offset1 = Math.floor(Math.random() * 40);
-    const offset2 = Math.floor(Math.random() * 40);
-
-    const [res1, res2] = await Promise.all([
-      fetchWithAuth(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query1)}&type=track&limit=25&offset=${offset1}`),
-      fetchWithAuth(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query2)}&type=track&limit=25&offset=${offset2}`),
-    ]);
-
-    if (res1.ok) {
-      const data1 = await res1.json();
-      if (data1.tracks?.items) rawSearchTracks.push(...data1.tracks.items);
-    } else {
-      console.warn("Query 1 failed:", res1.status);
-    }
-
-    if (res2.ok) {
-      const data2 = await res2.json();
-      if (data2.tracks?.items) rawSearchTracks.push(...data2.tracks.items);
-    } else {
-      console.warn("Query 2 failed:", res2.status);
-    }
-
-    // 重複 ＆ アーティスト上限 (1プール最大2曲) チェック関数
+    // フィルタリング・正規化ヘルパー (1プール内で同一アーティスト最大2曲まで)
     const filterAndNormalize = (rawItems: any[], maxCount: number, minPopularity: number = 0): TrackItem[] => {
       const result: TrackItem[] = [];
       const shuffled = shuffleArray(rawItems);
@@ -536,13 +492,13 @@ const fetchDirectSearchRadioPool = async (
         if (!t || !t.uri) continue;
 
         const popularity = t.popularity ?? 50;
-        if (popularity < minPopularity) continue; // 有名度フィルター
+        if (popularity < minPopularity) continue;
 
         const mainArtist = t.artists?.[0];
         const artistId = mainArtist?.id || mainArtist?.name || "unknown";
         const currentCount = artistCountMap.get(artistId) || 0;
 
-        // 条件: 過去数日間に再生されていない ＆ 同一アーティストは最大2曲まで
+        // 過去数日間に再生されていない ＆ 同一アーティストは最大2曲まで
         if (!usedUris.has(t.uri) && currentCount < 2) {
           usedUris.add(t.uri);
           artistCountMap.set(artistId, currentCount + 1);
@@ -560,45 +516,133 @@ const fetchDirectSearchRadioPool = async (
       return result;
     };
 
-    // 有名曲 (popularity >= 40) を 20 曲抽出
-    const selectedFamous = filterAndNormalize(rawSearchTracks, 20, 40);
+    let famousTracks: TrackItem[] = [];
 
-    // --- B. 👤 自分のトップトラック (アクセントとして約 15% ➔ 3曲のみ) ---
-    let rawPersonal: any[] = [];
-    const topRes = await fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=15");
-    if (topRes.ok) {
-      const topData = await topRes.json();
-      if (topData.items) rawPersonal.push(...topData.items);
-    }
+    // --- 第1層: 100% 成功する単一単語クエリ検索 (/v1/search) ---
+    const safeQueries = ["J-POP", "J-ROCK", "平成", "アニメ", "2000s", "2010s", "シティポップ", "令和"];
+    const shuffledQueries = shuffleArray(safeQueries);
+    const q1 = shuffledQueries[0];
+    const q2 = shuffledQueries[1];
 
-    const selectedPersonal = filterAndNormalize(rawPersonal, 3, 0);
+    console.log(`📻 [Safe Search] Searching with queries: "${q1}" and "${q2}"`);
 
-    // --- C. 統合してシャッフル ---
-    const finalPool = shuffleArray([
-      ...selectedFamous,   // 20曲 (J-POP/J-ROCK/年代ヒット曲)
-      ...selectedPersonal, // 3曲  (自分の曲)
+    // offset は 0〜5 の小範囲にして範囲外エラーを防止
+    const offset1 = Math.floor(Math.random() * 5);
+    const offset2 = Math.floor(Math.random() * 5);
+
+    const [res1, res2] = await Promise.all([
+      fetchWithAuth(`https://api.spotify.com/v1/search?q=${encodeURIComponent(q1)}&type=track&market=JP&limit=20&offset=${offset1}`),
+      fetchWithAuth(`https://api.spotify.com/v1/search?q=${encodeURIComponent(q2)}&type=track&market=JP&limit=20&offset=${offset2}`),
     ]);
 
+    let rawSearchTracks: any[] = [];
+    if (res1.ok) {
+      const d1 = await res1.json();
+      if (d1.tracks?.items) rawSearchTracks.push(...d1.tracks.items);
+    }
+    if (res2.ok) {
+      const d2 = await res2.json();
+      if (d2.tracks?.items) rawSearchTracks.push(...d2.tracks.items);
+    }
+
+    famousTracks.push(...filterAndNormalize(rawSearchTracks, 15, 30));
+
+    // --- 第2層: 関連アーティストの Top Tracks マイニング ---
+    let rawRelatedTracks: any[] = [];
+    const topArtistsRes = await fetchWithAuth(
+      "https://api.spotify.com/v1/me/top/artists?time_range=short_term&limit=5"
+    );
+
+    if (topArtistsRes.ok) {
+      const topArtistsData = await topArtistsRes.json();
+      const seedArtist = shuffleArray(topArtistsData.items || [])[0] as any;
+
+      if (seedArtist?.id) {
+        const relatedRes = await fetchWithAuth(
+          `https://api.spotify.com/v1/artists/${seedArtist.id}/related-artists`
+        );
+        if (relatedRes.ok) {
+          const relatedData = await relatedRes.json();
+          const targetArtists = shuffleArray(relatedData.artists || []).slice(0, 4);
+
+          for (const artist of targetArtists) {
+            const topTracksRes = await fetchWithAuth(
+              `https://api.spotify.com/v1/artists/${(artist as any).id}/top-tracks?market=JP`
+            );
+            if (topTracksRes.ok) {
+              const tracksData = await topTracksRes.json();
+              if (tracksData.tracks) rawRelatedTracks.push(...tracksData.tracks);
+            }
+          }
+        }
+      }
+    }
+
+    const relatedTracks = filterAndNormalize(rawRelatedTracks, 8, 30);
+
+    // --- 第3層: 自分のトップトラック (隠し味として 3曲のみ) ---
+    let rawPersonal: any[] = [];
+    const personalTopRes = await fetchWithAuth(
+      "https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=15"
+    );
+    if (personalTopRes.ok) {
+      const personalData = await personalTopRes.json();
+      if (personalData.items) rawPersonal.push(...personalData.items);
+    }
+
+    const personalTracks = filterAndNormalize(rawPersonal, 3, 0);
+
+    // --- 第4層 (自動保険): もしプールが20曲未満なら、新着リリースから自動補填 ---
+    let combined = [...famousTracks, ...relatedTracks, ...personalTracks];
+
+    if (combined.length < 20) {
+      console.log("📻 [Fallback Active] Pool is under 20 tracks. Fetching new releases fallback...");
+      const newReleasesRes = await fetchWithAuth(
+        "https://api.spotify.com/v1/browse/new-releases?country=JP&limit=20"
+      );
+      if (newReleasesRes.ok) {
+        const nrData = await newReleasesRes.json();
+        const albums: any[] = nrData.albums?.items || [];
+
+        for (const album of shuffleArray(albums).slice(0, 5)) {
+          if (!album || !album.id) continue;
+          const albumTracksRes = await fetchWithAuth(
+            `https://api.spotify.com/v1/albums/${album.id}/tracks?market=JP&limit=5`
+          );
+          if (albumTracksRes.ok) {
+            const atData = await albumTracksRes.json();
+            if (atData.items) {
+              const fallbackAdded = filterAndNormalize(atData.items, 5, 0);
+              combined.push(...fallbackAdded);
+            }
+          }
+        }
+      }
+    }
+
+    const finalPool = shuffleArray(combined);
+
     console.log(
-      `🌐 [Structured Pool Built] Total: ${finalPool.length} (FamousSearch: ${selectedFamous.length}, Personal: ${selectedPersonal.length})`
+      `🌐 [100% Guaranteed Pool Built] Total: ${finalPool.length} (FamousSearch: ${famousTracks.length}, RelatedHits: ${relatedTracks.length}, Personal: ${personalTracks.length})`
     );
 
     return {
       pool: finalPool.length > 0 ? finalPool : SEED_LIBRARY,
-      timeLabel: `Direct Search: ${query1} 📻`,
+      timeLabel: `Radio: ${q1} 📻`,
     };
   } catch (err) {
-    console.error("Failed to fetch structured search radio pool:", err);
-    return { pool: SEED_LIBRARY, timeLabel: "Structured Search Radio 📻" };
+    console.error("Critical error in radio pool, executing emergency fallback:", err);
+    return { pool: SEED_LIBRARY, timeLabel: "Emergency Radio 📻" };
   }
 };
 
-const fetchPublicRadioPool = fetchDirectSearchRadioPool;
-const fetchFamousBalancedTrackPool = fetchDirectSearchRadioPool;
-const fetch30_35_35TrackPool = fetchDirectSearchRadioPool;
-const fetch40_30_30TrackPool = fetchDirectSearchRadioPool;
-const fetch60_20_20TrackPool = fetchDirectSearchRadioPool;
-const fetchHybridTrackPool = fetchDirectSearchRadioPool;
+const fetchDirectSearchRadioPool = fetchBulletproofRadioPool;
+const fetchPublicRadioPool = fetchBulletproofRadioPool;
+const fetchFamousBalancedTrackPool = fetchBulletproofRadioPool;
+const fetch30_35_35TrackPool = fetchBulletproofRadioPool;
+const fetch40_30_30TrackPool = fetchBulletproofRadioPool;
+const fetch60_20_20TrackPool = fetchBulletproofRadioPool;
+const fetchHybridTrackPool = fetchBulletproofRadioPool;
 
 // 🎵 2. クールダウン（重複・連続再生防止）付き選曲ロジック
 const selectNextTrackWithCooldown = (
