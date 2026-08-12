@@ -9,6 +9,7 @@ export interface TrackItem {
   artist: string;
   artistId?: string;
   coverUrl: string;
+  popularity?: number;
 }
 
 // 📺 100% Real-Time Spotify Now Playing State
@@ -370,45 +371,50 @@ export interface TimeAudioParams {
   genres: string[];
 }
 
-const getTimeBasedDiscoveryConfig = (): TimeAudioParams => {
+const getTimeBasedDiscoveryConfig = () => {
   const hour = new Date().getHours();
 
   if (hour >= 5 && hour < 10) {
     return {
-      timeLabel: "Morning Discovery 🌅",
-      genres: ["pop", "j-pop", "acoustic"],
+      label: "Morning Discovery 🌅",
+      genres: ["pop", "j-pop", "acoustic", "rock"],
       targetEnergy: 0.65,
       targetValence: 0.8,
-      targetDanceability: 0.7,
     };
   } else if (hour >= 10 && hour < 17) {
     return {
-      timeLabel: "Daytime Highway ☀️",
-      genres: ["pop", "rock", "j-pop"],
+      label: "Daytime Highway ☀️",
+      genres: ["pop", "rock", "j-pop", "dance"],
       targetEnergy: 0.85,
       targetValence: 0.75,
-      targetDanceability: 0.8,
     };
   } else if (hour >= 17 && hour < 22) {
     return {
-      timeLabel: "Evening Drive 🌆",
-      genres: ["r-n-b", "chill", "indie"],
+      label: "Evening Drive <ctrl42>",
+      genres: ["r-n-b", "chill", "j-pop", "soul"],
       targetEnergy: 0.55,
       targetValence: 0.5,
-      targetDanceability: 0.6,
     };
   } else {
     return {
-      timeLabel: "Late Night Lounge 🌙",
-      genres: ["chill", "r-n-b", "acoustic"],
+      label: "Late Night Lounge 🌙",
+      genres: ["chill", "r-n-b", "acoustic", "jazz"],
       targetEnergy: 0.35,
       targetValence: 0.35,
-      targetDanceability: 0.4,
     };
   }
 };
 
-const getTimeBasedParams = getTimeBasedDiscoveryConfig;
+const getTimeBasedParams = () => {
+  const cfg = getTimeBasedDiscoveryConfig();
+  return {
+    timeLabel: cfg.label,
+    genres: cfg.genres,
+    targetEnergy: cfg.targetEnergy,
+    targetValence: cfg.targetValence,
+    targetDanceability: 0.6,
+  };
+};
 
 const shuffleArray = <T,>(array: T[]): T[] => {
   const arr = [...array];
@@ -419,41 +425,39 @@ const shuffleArray = <T,>(array: T[]): T[] => {
   return arr;
 };
 
-// 🎵 1. 40:30:30 ハイブリッド選曲ロジック (fetch40_30_30TrackPool)
-const fetch40_30_30TrackPool = async (
+// 🎵 1. 新・黄金比 30 : 35 : 35 ✕ 広域ディスカバリー強化 (fetch30_35_35TrackPool)
+const fetch30_35_35TrackPool = async (
   _token?: string,
   playedUris: string[] = []
 ): Promise<{ pool: TrackItem[]; timeLabel: string }> => {
   try {
-    const timeConfig = getTimeBasedParams();
-    console.log(`📻 [Radio Engine 40:30:30] Building pool for: ${timeConfig.timeLabel}`);
+    const config = getTimeBasedDiscoveryConfig();
+    console.log(`🌐 [Radio Engine 30:35:35] Dynamic Pool Generation for: ${config.label}`);
 
-    // 重複・再生済み排除用ヘルパー
     const normalizeTracks = (items: any[]): TrackItem[] => {
       if (!Array.isArray(items)) return [];
-      const result: TrackItem[] = [];
-      for (const item of items) {
-        const t = item.track || item;
-        if (t && t.uri && !playedUris.includes(t.uri)) {
-          result.push({
+      return items
+        .map((item: any) => {
+          const t = item.track || item;
+          return {
             uri: t.uri,
             name: t.name,
             artist: t.artists ? t.artists.map((a: any) => a.name).join(", ") : "Unknown Artist",
             artistId: t.artists && t.artists[0] ? t.artists[0].id : undefined,
             coverUrl: t.album?.images?.[0]?.url || FALLBACK_COVER_URL,
-          });
-        }
-      }
-      return result;
+            popularity: t.popularity || 50,
+          };
+        })
+        .filter((t) => t.uri && !playedUris.includes(t.uri));
     };
 
-    // --- A. 🔥 最近聴いている曲 (40% ➔ 12曲) ---
-    let recentTracks: TrackItem[] = [];
+    // --- A. 🔥 最近聴いている曲 (30% ➔ 9曲) ---
     const [recentRes, shortTopRes] = await Promise.all([
-      fetchWithAuth("https://api.spotify.com/v1/me/player/recently-played?limit=25"),
-      fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=25"),
+      fetchWithAuth("https://api.spotify.com/v1/me/player/recently-played?limit=30"),
+      fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=30"),
     ]);
 
+    let recentTracks: TrackItem[] = [];
     if (recentRes.ok) {
       recentTracks.push(...normalizeTracks((await recentRes.json()).items || []));
     }
@@ -461,25 +465,22 @@ const fetch40_30_30TrackPool = async (
       recentTracks.push(...normalizeTracks((await shortTopRes.json()).items || []));
     }
 
-    const selectedRecent = shuffleArray(recentTracks).slice(0, 12);
+    const selectedRecent = shuffleArray(recentTracks).slice(0, 9);
     const recentArtistIds = selectedRecent.map((t) => t.artistId).filter((id): id is string => Boolean(id));
 
-    // --- B. 🕰️ 昔聴いていた ＋ 同世代ヒット曲 (30% ➔ 9曲) ---
+    // --- B. 🕰️ 昔聴いていた ＋ 世代ヒット曲 (35% ➔ 10曲) ---
     let nostalgiaTracks: TrackItem[] = [];
-
-    // B-1. 自分の過去のトップトラック (長期)
     const longTopRes = await fetchWithAuth(
-      "https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=20"
+      "https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=30"
     );
     if (longTopRes.ok) {
-      nostalgiaTracks.push(...normalizeTracks((await longTopRes.json()).items || []));
+      const items = (await longTopRes.json()).items || [];
+      const normalizedLong = normalizeTracks(items);
+      nostalgiaTracks.push(...normalizedLong.filter((t) => (t.popularity || 100) < 80));
     }
 
-    // B-2. 世代のヒット曲 (2010年代〜2020年代前半のJ-POP/トレンド検索)
-    const eraKeywords = ["2010年代 J-POP", "平成ヒット", "青春ソング"];
-    const randomKeyword = eraKeywords[Math.floor(Math.random() * eraKeywords.length)];
     const eraSearchRes = await fetchWithAuth(
-      `https://api.spotify.com/v1/search?q=${encodeURIComponent(randomKeyword)}&type=track&limit=20`
+      `https://api.spotify.com/v1/search?q=${encodeURIComponent("J-POP 2010年代 トレンド")}&type=track&limit=20`
     );
     if (eraSearchRes.ok) {
       const eraData = await eraSearchRes.json();
@@ -488,28 +489,36 @@ const fetch40_30_30TrackPool = async (
       }
     }
 
-    const selectedNostalgia = shuffleArray(nostalgiaTracks).slice(0, 9);
+    const selectedNostalgia = shuffleArray(nostalgiaTracks).slice(0, 10);
 
-    // --- C. ✨ 知らないが好みに合っていそうな曲 (30% ➔ 9曲) ---
-    let tasteMatchedNewTracks: TrackItem[] = [];
-
+    // --- C. ✨ 知らないが好みに合っていそうな曲 (35% ➔ 10曲) ---
     const knownArtistIds = new Set(
-      [...recentTracks, ...nostalgiaTracks].map((t) => t.artistId).filter((id): id is string => Boolean(id))
+      [...selectedRecent, ...selectedNostalgia].map((t) => t.artistId).filter((id): id is string => Boolean(id))
     );
     const knownUris = new Set([...recentTracks, ...nostalgiaTracks].map((t) => t.uri));
 
-    const seedArtist = recentArtistIds[Math.floor(Math.random() * Math.min(5, recentArtistIds.length))] || "";
-
     const recParams = new URLSearchParams({
-      limit: "30",
-      target_energy: timeConfig.targetEnergy.toString(),
-      target_valence: timeConfig.targetValence.toString(),
-      max_popularity: "65", // 条件を少し緩めてヒット率をアップ
+      limit: "40",
+      max_popularity: "80", // Popularity <= 80 (知名度のある曲も許容)
+      target_energy: config.targetEnergy.toString(),
+      target_valence: config.targetValence.toString(),
     });
 
-    if (seedArtist) recParams.append("seed_artists", seedArtist);
+    if (recentArtistIds.length > 0) {
+      const sampledArtists = shuffleArray(recentArtistIds).slice(0, 2);
+      recParams.append("seed_artists", sampledArtists.join(","));
+    }
+
+    const seedTrack = selectedRecent[0]?.uri.split(":").pop();
+    if (seedTrack) {
+      recParams.append("seed_tracks", seedTrack);
+    }
+
+    const randomGenre = config.genres[Math.floor(Math.random() * config.genres.length)];
+    recParams.append("seed_genres", randomGenre);
 
     const recRes = await fetchWithAuth(`https://api.spotify.com/v1/recommendations?${recParams.toString()}`);
+    let tasteMatchedNewTracks: TrackItem[] = [];
 
     if (recRes.ok) {
       const recData = await recRes.json();
@@ -521,48 +530,39 @@ const fetch40_30_30TrackPool = async (
       tasteMatchedNewTracks = normalizeTracks(filtered);
     }
 
-    // フォールバック: フィルタが厳しすぎて 0 件〜少量だった場合は時間帯ジャンルから補充
     if (tasteMatchedNewTracks.length < 5) {
-      const randomGenre = timeConfig.genres[Math.floor(Math.random() * timeConfig.genres.length)];
       const fallbackRes = await fetchWithAuth(
-        `https://api.spotify.com/v1/recommendations?limit=20&seed_genres=${randomGenre}&max_popularity=65`
+        `https://api.spotify.com/v1/recommendations?limit=20&seed_genres=${config.genres[0]}&max_popularity=80`
       );
       if (fallbackRes.ok) {
         const fallbackData = await fallbackRes.json();
         const fallbackFiltered = (fallbackData.tracks || []).filter((t: any) => !knownUris.has(t.uri));
         tasteMatchedNewTracks.push(...normalizeTracks(fallbackFiltered));
-      } else {
-        const searchRes = await fetchWithAuth(
-          `https://api.spotify.com/v1/search?q=${encodeURIComponent(randomGenre)}&type=track&limit=20`
-        );
-        if (searchRes.ok) {
-          const searchData = await searchRes.json();
-          const searchFiltered = (searchData.tracks?.items || []).filter((t: any) => !knownUris.has(t.uri));
-          tasteMatchedNewTracks.push(...normalizeTracks(searchFiltered));
-        }
       }
     }
 
-    const selectedNew = shuffleArray(tasteMatchedNewTracks).slice(0, 9);
+    const selectedNew = shuffleArray(tasteMatchedNewTracks).slice(0, 10);
 
-    // --- D. 40:30:30 で統合して最終シャッフル ---
-    const combined = [...selectedRecent, ...selectedNostalgia, ...selectedNew];
-    const finalPool = shuffleArray(combined.length > 0 ? combined : SEED_LIBRARY);
+    const finalPool = shuffleArray([
+      ...selectedRecent,    // 9曲 (30%)
+      ...selectedNostalgia, // 10曲 (35%)
+      ...selectedNew,       // 10曲 (35%)
+    ]);
 
     console.log(
-      `📻 [40:30:30 Engine Result] Total: ${finalPool.length} (Recent: ${selectedRecent.length}, Nostalgia/Era: ${selectedNostalgia.length}, MatchedNew: ${selectedNew.length}) for ${timeConfig.timeLabel}`
+      `🌐 [Radio Pool Built] Total: ${finalPool.length} (Recent: ${selectedRecent.length}, Nostalgia/Era: ${selectedNostalgia.length}, MatchedNew: ${selectedNew.length}) for ${config.label}`
     );
 
-    return { pool: finalPool, timeLabel: timeConfig.timeLabel };
+    return { pool: finalPool.length > 0 ? finalPool : SEED_LIBRARY, timeLabel: config.label };
   } catch (err) {
-    console.error("Failed to build 40:30:30 track pool:", err);
-    return { pool: SEED_LIBRARY, timeLabel: getTimeBasedParams().timeLabel };
+    console.error("Failed to fetch dynamic track pool:", err);
+    return { pool: SEED_LIBRARY, timeLabel: getTimeBasedDiscoveryConfig().label };
   }
 };
 
-const fetch60_20_20TrackPool = fetch40_30_30TrackPool;
-
-const fetchHybridTrackPool = fetch60_20_20TrackPool;
+const fetch40_30_30TrackPool = fetch30_35_35TrackPool;
+const fetch60_20_20TrackPool = fetch30_35_35TrackPool;
+const fetchHybridTrackPool = fetch30_35_35TrackPool;
 
 // 🎵 2. クールダウン（重複・連続再生防止）付き選曲ロジック
 const selectNextTrackWithCooldown = (
@@ -600,8 +600,24 @@ export default function RadioPlayer() {
   const [isPremiumError, setIsPremiumError] = useState(false);
   const [deviceId, setDeviceId] = useState<string | null>(null);
 
-  // 🔇 1. ミュート状態の管理 (isMuted)
+  // 🔇 1. ミュート状態の管理 (isMuted) ＆ Autoplay 解禁待機フラグ
   const [isMuted, setIsMuted] = useState(false);
+  const [isAutoplayBlocked, setIsAutoplayBlocked] = useState(true);
+
+  // ⚡ [Autoplay Unlock] 画面タップで音声を解禁
+  const handleUnlockAutoplay = async () => {
+    if (!playerRef.current) return;
+    console.log("⚡ [Autoplay Unlock] User tapped screen. Unlocking audio...");
+
+    try {
+      await playerRef.current.resume();
+      await playerRef.current.setVolume(0.8);
+      setIsAutoplayBlocked(false);
+    } catch (err) {
+      console.error("Autoplay unlock failed:", err);
+      setIsAutoplayBlocked(false);
+    }
+  };
 
   // ⚡ 自動再生フラグ ＆ 重複防止ガード (Auto-Start & End Guard)
   const autoStartedRef = useRef(false);
@@ -614,28 +630,30 @@ export default function RadioPlayer() {
   const currentPositionSecRef = useRef<number>(0);
   const [feedbackLogs, setFeedbackLogs] = useState<FeedbackLog[]>([]);
 
-  // 🔁 1. Spotify リピートモードの強制解除 (disableSpotifyRepeat)
-  const disableSpotifyRepeat = async (currentDeviceId?: string) => {
-    if (!currentDeviceId) return;
+  // 🔁 4. 連続再生防止の徹底 (disableSpotifyRepeat)
+  const disableSpotifyRepeat = async (tokenStr?: string, currentDeviceId?: string) => {
+    const targetDeviceId = currentDeviceId || deviceId;
+    if (!targetDeviceId) return;
 
     try {
-      await fetchWithAuth(
-        `https://api.spotify.com/v1/me/player/repeat?state=off&device_id=${currentDeviceId}`,
+      const res = await fetchWithAuth(
+        `https://api.spotify.com/v1/me/player/repeat?state=off&device_id=${targetDeviceId}`,
         { method: "PUT" }
       );
-      console.log("📻 [Radio Setup] Repeat mode disabled.");
+      if (res.ok) {
+        console.log("📻 [Radio Setup] Repeat mode disabled.");
+      }
     } catch (err) {
-      console.warn("Notice: Could not set repeat mode, but skipping gracefully:", err);
+      console.error("Failed to disable repeat mode:", err);
     }
   };
 
   // 2. スキップ時の確実な再生 ＆ リピート回避 (startPlaybackWithTrack)
   const startPlaybackWithTrack = async (trackUri: string, targetDeviceId: string) => {
     try {
-      // リピート設定を OFF にリセット
-      await disableSpotifyRepeat(targetDeviceId);
+      const savedToken = getStoredAccessToken() || token || "";
+      await disableSpotifyRepeat(savedToken, targetDeviceId);
 
-      // デバイスIDを明示して再生命令を送信
       const res = await fetchWithAuth(`https://api.spotify.com/v1/me/player/play?device_id=${targetDeviceId}`, {
         method: "PUT",
         headers: {
@@ -661,8 +679,11 @@ export default function RadioPlayer() {
   const [historyUris, setHistoryUris] = useState<string[]>([]);
   const [historyArtists, setHistoryArtists] = useState<string[]>([]);
   const [playedUris, setPlayedUris] = useState<string[]>([]);
-  const [upcomingQueue, setUpcomingQueue] = useState<TrackItem[]>([]);
-  const queuedUrisSetRef = useRef<Set<string>>(new Set());
+  const [upcomingUris, setUpcomingUris] = useState<string[]>([]);
+
+  // 🎵 1. 再生済み履歴管理の強化 (Set & Ref の導入)
+  const queuedUrisSetRef = useRef<Set<string>>(new Set()); // Spotify キューに追加済みのURI
+  const playedHistoryRef = useRef<Set<string>>(new Set()); // 長期的な再生履歴 (Recommendations排除用)
   const isFillingQueueRef = useRef(false);
 
   // 🔄 プール再取得時の呼び出しロジック (refreshPool)
@@ -670,34 +691,14 @@ export default function RadioPlayer() {
     const savedToken = getStoredAccessToken() || token;
     if (!savedToken) return;
 
-    const { pool: newPool, timeLabel } = await fetch60_20_20TrackPool(savedToken, customPlayedUris);
+    const { pool: newPool, timeLabel } = await fetch30_35_35TrackPool(savedToken, customPlayedUris);
     setTrackPool(newPool);
     setActiveTimeLabel(timeLabel);
-    console.log("📻 [Pool Refreshed 60:20:20] New track pool loaded excluding played URIs.");
+    console.log("📻 [Pool Refreshed 30:35:35] New track pool loaded excluding played URIs.");
   };
 
-  // 🎵 1. Spotify キュー追加 API 関数 (addToSpotifyQueue)
-  const addToSpotifyQueue = async (trackUri: string, targetDeviceId: string) => {
-    const savedToken = getStoredAccessToken() || token;
-    if (!savedToken || !targetDeviceId) return false;
-
-    try {
-      const res = await fetchWithAuth(
-        `https://api.spotify.com/v1/me/player/queue?uri=${encodeURIComponent(trackUri)}&device_id=${targetDeviceId}`,
-        { method: "POST" }
-      );
-      if (res.ok) {
-        console.log(`📻 [Queue Pre-load] Successfully queued track: ${trackUri}`);
-        return true;
-      }
-    } catch (err) {
-      console.error("Failed to add track to Spotify queue:", err);
-    }
-    return false;
-  };
-
-  // ⚡ 2. 重複禁止 Set 管理付きキュー維持ロジック (maintainUpcomingQueue)
-  const maintainUpcomingQueue = async (currentDeviceId: string) => {
+  // 🎵 Dynamic Shuffle ✕ Pre-loading Queue エンジンの実装 (maintainRadioQueue)
+  const maintainRadioQueue = async (currentDeviceId: string) => {
     if (isFillingQueueRef.current || !currentDeviceId) return;
     isFillingQueueRef.current = true;
 
@@ -705,42 +706,62 @@ export default function RadioPlayer() {
       const savedToken = getStoredAccessToken() || token;
       if (!savedToken) return;
 
-      let pool = [...trackPool];
+      // ヘルパー: Spotify キューに追加
+      const addToSpotifyQueue = async (trackUri: string) => {
+        try {
+          const res = await fetchWithAuth(
+            `https://api.spotify.com/v1/me/player/queue?uri=${encodeURIComponent(trackUri)}&device_id=${currentDeviceId}`,
+            { method: "POST" }
+          );
+          if (res.ok) {
+            console.log(`📻 [Queue Added]: ${trackUri}`);
+            return true;
+          }
+        } catch (err) {
+          console.error("Failed to add track to Spotify queue:", err);
+        }
+        return false;
+      };
 
-      // プールが少ない場合は 60:20:20 で補給
-      if (pool.length < 5) {
-        const { pool: newPool } = await fetch60_20_20TrackPool(
+      // --- Dynamic Shuffle: アプリ側のキューの維持・補充 (目標: 常時 8曲キープ) ---
+      let currentUpcomingUris = [...upcomingUris];
+
+      if (currentUpcomingUris.length < 5) {
+        console.log(`📻 [Dynamic Shuffle] Upcoming queue is low (${currentUpcomingUris.length} tracks). Refilling...`);
+        const { pool: newPool } = await fetch30_35_35TrackPool(
           savedToken,
           Array.from(queuedUrisSetRef.current)
         );
-        pool = [...pool, ...newPool];
-        setTrackPool(pool);
+        const shuffledNewUris = shuffleArray(newPool.map((t) => t.uri));
+        currentUpcomingUris = [...currentUpcomingUris, ...shuffledNewUris];
       }
 
-      // 目標: 常に Spotify 側に 3 曲先回りキューを入れる
+      // Fisher-Yates アルゴリズムでアプリ側のキュー全体を動的にシャッフル
+      currentUpcomingUris = shuffleArray(currentUpcomingUris);
+      setUpcomingUris(currentUpcomingUris);
+
+      // --- Pre-loading Queue: Spotify側のキューの事前補充 (目標: Spotify側に常時 3曲待機) ---
       let addedCount = 0;
-      for (const track of pool) {
+      for (const uri of currentUpcomingUris) {
         if (addedCount >= 3) break;
 
         // すでにキューに入れた曲はスキップ
-        if (queuedUrisSetRef.current.has(track.uri)) continue;
+        if (queuedUrisSetRef.current.has(uri)) continue;
 
-        const success = await addToSpotifyQueue(track.uri, currentDeviceId);
+        const success = await addToSpotifyQueue(uri);
         if (success) {
-          queuedUrisSetRef.current.add(track.uri);
+          queuedUrisSetRef.current.add(uri);
           addedCount++;
-          console.log(`📻 [Queue Added] (${queuedUrisSetRef.current.size} queued total): ${track.name}`);
         }
       }
-
-      // 消費したトラックをプールから除去
-      setTrackPool((prev) => prev.filter((t) => !queuedUrisSetRef.current.has(t.uri)));
     } catch (err) {
-      console.error("Queue maintenance error:", err);
+      console.error("Error maintaining upcoming queue:", err);
     } finally {
       isFillingQueueRef.current = false;
     }
   };
+
+  const maintainUpcomingQueue = maintainRadioQueue;
 
   // 📺 画面表示（UI）の 100% 受動同期 (player_state_changed のみで更新)
   const [nowPlaying, setNowPlaying] = useState<NowPlayingState>({
@@ -953,29 +974,33 @@ export default function RadioPlayer() {
     }
   };
 
-  // ⚡ 手動スキップボタンを押した時だけ明示的に nextTrack() を呼ぶ
-  const handleManualSkip = async () => {
+  // 手動スキップボタンを押した時だけ明示的に nextTrack() を呼ぶ
+  const handleSkip = async () => {
     if (!playerRef.current) return;
     try {
-      console.log("⏭️ [Manual Skip] Triggered by user.");
+      console.log("⏭️ [Manual Skip] Using pre-loaded queue.");
       if (typeof playerRef.current.nextTrack === "function") {
         await playerRef.current.nextTrack();
       } else {
         await fetchWithAuth("https://api.spotify.com/v1/me/player/next", { method: "POST" });
       }
     } catch (err) {
-      console.error("Manual skip error:", err);
+      console.error("Failed to skip using pre-loaded queue:", err);
     }
   };
 
-  const handleSkip = handleManualSkip;
+  const handleManualSkip = handleSkip;
 
-  // 🎵 現在再生中のトラック ID が変化した時のみ、裏で静かにキューを補充
+  // 🌟 曲が新しく再生開始されたタイミングで常にキュー補充チェックを走らせる
   useEffect(() => {
     const effectiveDeviceId = deviceId || (typeof window !== "undefined" ? (window as any)._lastKnownDeviceId : null);
     if (nowPlaying?.id && effectiveDeviceId) {
+      if (nowPlaying.uri) {
+        queuedUrisSetRef.current.add(nowPlaying.uri);
+        playedHistoryRef.current.add(nowPlaying.uri);
+      }
       console.log(`🎵 [Track Changed] Now playing: ${nowPlaying.title}. Maintaining queue...`);
-      maintainUpcomingQueue(effectiveDeviceId);
+      maintainRadioQueue(effectiveDeviceId);
     }
   }, [nowPlaying?.id, deviceId]);
 
@@ -1052,40 +1077,45 @@ export default function RadioPlayer() {
     const initSpotifyPlayer = async () => {
       if (playerRef.current) return;
 
-      let validToken = getStoredAccessToken();
+      console.log("🔑 [SDK Pre-Init] Spotify SDK Ready. Verifying token freshness...");
+      let validToken = localStorage.getItem("spotify_access_token") || getStoredAccessToken();
+
       if (!validToken) {
-        console.log("🔑 [SDK Pre-Init] Token is missing, attempting pre-refresh...");
+        console.log("🔑 [SDK Pre-Init] No token found, attempting refresh...");
+        validToken = await refreshAccessToken();
+      } else {
+        console.log("🔑 [SDK Pre-Init] desperate refresh token to ensure fresh...");
         validToken = await refreshAccessToken();
       }
 
       if (!validToken) {
-        console.warn("⚠️ [SDK Pre-Init] No valid token available. Waiting for user login.");
-        setToken(null);
+        console.warn("⚠️ [SDK Pre-Init] Desperate token refresh failed. User needs re-login.");
+        handleLogin();
         return;
       }
 
+      console.log("🔑 [SDK Pre-Init] desperate Token refresh success, initializing player...");
+
       const player = new window.Spotify.Player({
-        name: "Drive Tune Web Player",
+        name: "DriveTune Driver Mode Player",
         getOAuthToken: async (cb: (t: string) => void) => {
-          let currentToken = getStoredAccessToken();
-          if (!currentToken) {
-            currentToken = await refreshAccessToken();
-          }
-          if (currentToken) {
-            cb(currentToken);
-          }
+          let currentToken = localStorage.getItem("spotify_access_token") || getStoredAccessToken();
+          if (!currentToken) currentToken = await refreshAccessToken();
+          if (currentToken) cb(currentToken);
         },
-        volume: 0.8,
+        volume: 0, // 🌟 起動時は音量0でAutoplayブロックを回避
       });
 
       playerRef.current = player;
 
       player.addListener("ready", ({ device_id }: { device_id: string }) => {
-        console.log("🟢 [Spotify Web SDK Ready] Device ID:", device_id);
+        console.log("🟢 Spotify Player Ready. Device ID:", device_id);
         if (typeof window !== "undefined") {
           (window as any)._lastKnownDeviceId = device_id;
         }
         setDeviceId(device_id);
+        // 🌟 Autoplay解禁のためにタップオーバーレイを表示
+        setIsAutoplayBlocked(true);
       });
 
       player.addListener("not_ready", ({ device_id }: { device_id: string }) => {
@@ -1124,6 +1154,12 @@ export default function RadioPlayer() {
           });
 
           setIsPlaying(!state.paused);
+
+          // --- 曲遷移ロジックの改修 ---
+          const isEnded = state.position === 0 && state.paused && state.track_window?.previous_tracks?.length > 0;
+          if (isEnded) {
+            console.log("📻 [Auto-Radio] Track finished. Waiting for Spotify's native queue to take over.");
+          }
         }
       });
 
@@ -1369,6 +1405,24 @@ export default function RadioPlayer() {
 
   return (
     <main className="relative w-screen h-screen overflow-hidden bg-black text-white flex flex-col justify-between items-center py-10 px-6 select-none font-sans">
+      {/* 🌟 UI の最上部に Autoplay 解禁オーバーレイを追加 */}
+      {isAutoplayBlocked && deviceId && (
+        <div
+          className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-md flex flex-col items-center justify-center cursor-pointer select-none"
+          onClick={handleUnlockAutoplay}
+        >
+          <div className="text-center p-8 backdrop-blur-xl bg-white/10 rounded-3xl border border-white/20 max-w-sm shadow-2xl animate-pulse space-y-4">
+            <div className="text-6xl mb-2">📻</div>
+            <div className="text-2xl sm:text-3xl font-black text-white tracking-tight">
+              ラジオ起動
+            </div>
+            <div className="text-sm text-emerald-400 font-semibold leading-relaxed">
+              ドライブモードを開始するために、<br />画面をタップしてください 🚗💨
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ⏰ Time-Based Radio Mood Badge */}
       <div className="fixed top-4 left-1/2 -translate-x-1/2 z-40 px-4 py-1.5 bg-black/60 border border-emerald-500/30 text-emerald-300 rounded-full text-xs sm:text-sm font-bold shadow-lg backdrop-blur-md flex items-center gap-2">
         <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
@@ -1391,7 +1445,6 @@ export default function RadioPlayer() {
 
       {/* 🎛️ 1. TOP SECTION: Action Area (ONLY Mute Toggle & Skip Buttons) */}
       <div className="relative z-10 w-full max-w-md flex justify-around items-center pt-4">
-        {/* 🔇 ミュート切替ボタン */}
         <button
           onClick={handleToggleMute}
           className={`flex items-center gap-2 px-6 py-3.5 transition active:scale-95 backdrop-blur-md rounded-full border text-sm font-bold shadow-xl cursor-pointer ${
@@ -1404,7 +1457,6 @@ export default function RadioPlayer() {
           <span>{isMuted ? "解除" : "消音"}</span>
         </button>
 
-        {/* ⏭️ スキップボタン */}
         <button
           onClick={() => handleSkip()}
           className="flex items-center gap-2.5 px-8 py-3.5 bg-white text-black hover:bg-neutral-200 active:scale-95 transition rounded-full text-sm font-extrabold shadow-2xl cursor-pointer"
@@ -1419,8 +1471,8 @@ export default function RadioPlayer() {
         <FluidOrganicEqualizer isPlaying={isPlaying && !isMuted} />
       </div>
 
-      {/* 3. CENTER-LOWER SECTION: Track Metadata (100% Driven PASSIVELY by Spotify Player State) */}
-      <div className="relative z-10 text-center space-y-2 mb-6 transition-all duration-300 transform">
+      {/* 3. CENTER-LOWER SECTION: Track Metadata */}
+      <div className="relative z-10 text-center space-y-2 mb-20 transition-all duration-300 transform">
         <h1 className="text-3xl sm:text-5xl font-black tracking-tight drop-shadow-lg text-white">
           {nowPlaying.title}
         </h1>
@@ -1429,11 +1481,60 @@ export default function RadioPlayer() {
         </p>
       </div>
 
-      {/* 4. BOTTOM SECTION: Real-Time Audio Streaming Status & Playback Timer */}
-      <div className="relative z-10 w-full max-w-md text-center h-16 flex items-center justify-center px-4 bg-white/5 border border-white/10 rounded-2xl backdrop-blur-lg shadow-xl">
-        <p className="text-base sm:text-lg font-medium text-emerald-200/90 transition-all duration-500 ease-out">
-          🎵 {nowPlaying.title} - {nowPlaying.artist} ({currentPositionSec}s)
-        </p>
+      {/* 🌟 改修: 下部コントロールエリア (ガラスモフィズムUI) ＆ 巨大透明スキップタップ領域 */}
+      <div className="fixed bottom-0 left-0 right-0 p-4 sm:p-6 md:p-8 z-50 pointer-events-auto">
+        <div className="max-w-md mx-auto relative backdrop-blur-xl bg-black/40 rounded-3xl border border-white/10 p-5 flex items-center justify-between shadow-2xl overflow-hidden">
+          {/* 左側: 曲情報 ＆ 再生タイマー */}
+          <div className="flex items-center gap-3 overflow-hidden z-20 pointer-events-none">
+            {nowPlaying.coverUrl ? (
+              <img
+                src={nowPlaying.coverUrl}
+                alt={nowPlaying.title}
+                className="w-12 h-12 rounded-xl object-cover shadow-lg border border-white/10 flex-shrink-0"
+              />
+            ) : (
+              <div className="w-12 h-12 rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-xl flex-shrink-0">
+                🎵
+              </div>
+            )}
+            <div className="overflow-hidden text-left">
+              <p className="text-sm font-bold text-white truncate max-w-[180px] sm:max-w-[220px]">
+                {nowPlaying.title}
+              </p>
+              <p className="text-xs text-emerald-400/90 font-medium truncate max-w-[180px] sm:max-w-[220px]">
+                {nowPlaying.artist} ({currentPositionSec}s)
+              </p>
+            </div>
+          </div>
+
+          {/* 右側: ミュート切替 ＆ スキップ表示アイコン */}
+          <div className="flex items-center gap-2 z-20">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleToggleMute();
+              }}
+              className={`p-3 rounded-full border text-base font-bold shadow-lg transition active:scale-95 cursor-pointer ${
+                isMuted
+                  ? "bg-rose-500/30 border-rose-400 text-rose-300"
+                  : "bg-white/10 border-white/20 text-white hover:bg-white/20"
+              }`}
+              title={isMuted ? "消音解除" : "消音"}
+            >
+              {isMuted ? "🔇" : "🔊"}
+            </button>
+            <div className="p-3 bg-white text-black rounded-full font-bold text-base shadow-xl flex items-center justify-center pointer-events-none">
+              ⏭
+            </div>
+          </div>
+
+          {/* 🌟 改修: 透明な巨大スキップタップ領域 (パネル全体を覆う) */}
+          <div
+            className="absolute inset-0 cursor-pointer active:bg-white/10 transition-colors rounded-3xl z-10"
+            onClick={() => handleSkip()}
+            title="画面下部をタップでスキップ (ドライブモード)"
+          />
+        </div>
       </div>
     </main>
   );
