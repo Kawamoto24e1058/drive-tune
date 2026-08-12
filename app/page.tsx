@@ -974,11 +974,19 @@ export default function RadioPlayer() {
     }
   };
 
+  // ⚡ 視覚的フィードバックフラグ ＆ 全画面タップスキップ
+  const [isFlashing, setIsFlashing] = useState(false);
+
   // 手動スキップボタンを押した時だけ明示的に nextTrack() を呼ぶ
   const handleSkip = async () => {
     if (!playerRef.current) return;
+
+    // 視覚的フィードバック (150msだけ画面を軽く発光させる)
+    setIsFlashing(true);
+    setTimeout(() => setIsFlashing(false), 150);
+
     try {
-      console.log("⏭️ [Manual Skip] Using pre-loaded queue.");
+      console.log("⏭️ [Full Screen Tap] Fast-skipping to next track...");
       if (typeof playerRef.current.nextTrack === "function") {
         await playerRef.current.nextTrack();
       } else {
@@ -1404,12 +1412,23 @@ export default function RadioPlayer() {
   }
 
   return (
-    <main className="relative w-screen h-screen overflow-hidden bg-black text-white flex flex-col justify-between items-center py-10 px-6 select-none font-sans">
+    <main
+      className="relative w-screen h-screen overflow-hidden bg-black text-white flex flex-col justify-between items-center py-8 px-6 select-none font-sans cursor-pointer"
+      onClick={handleManualSkip}
+    >
+      {/* ⚡ タップ時の視覚フィードバック (150msだけ画面を一瞬軽発光させる) */}
+      {isFlashing && (
+        <div className="fixed inset-0 z-50 bg-white/20 pointer-events-none transition-opacity duration-100" />
+      )}
+
       {/* 🌟 UI の最上部に Autoplay 解禁オーバーレイを追加 */}
       {isAutoplayBlocked && deviceId && (
         <div
           className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-md flex flex-col items-center justify-center cursor-pointer select-none"
-          onClick={handleUnlockAutoplay}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleUnlockAutoplay();
+          }}
         >
           <div className="text-center p-8 backdrop-blur-xl bg-white/10 rounded-3xl border border-white/20 max-w-sm shadow-2xl animate-pulse space-y-4">
             <div className="text-6xl mb-2">📻</div>
@@ -1424,64 +1443,80 @@ export default function RadioPlayer() {
       )}
 
       {/* ⏰ Time-Based Radio Mood Badge */}
-      <div className="fixed top-4 left-1/2 -translate-x-1/2 z-40 px-4 py-1.5 bg-black/60 border border-emerald-500/30 text-emerald-300 rounded-full text-xs sm:text-sm font-bold shadow-lg backdrop-blur-md flex items-center gap-2">
+      <div className="fixed top-4 left-1/2 -translate-x-1/2 z-40 px-4 py-1.5 bg-black/60 border border-emerald-500/30 text-emerald-300 rounded-full text-xs sm:text-sm font-bold shadow-lg backdrop-blur-md flex items-center gap-2 pointer-events-none">
         <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
         <span>{activeTimeLabel}</span>
       </div>
 
       {/* ⚠️ 403 Premium / Device Warning Toast */}
       {isPremiumError && (
-        <div className="fixed top-4 z-50 px-6 py-3 bg-rose-500/90 border border-rose-400 text-white rounded-full text-xs sm:text-sm font-bold shadow-2xl backdrop-blur-md animate-bounce">
+        <div className="fixed top-4 z-50 px-6 py-3 bg-rose-500/90 border border-rose-400 text-white rounded-full text-xs sm:text-sm font-bold shadow-2xl backdrop-blur-md animate-bounce pointer-events-none">
           ⚠️ 403 Error: Spotify Premium アカウント、またはアクティブなデバイス許可が必要です。再ログインをお試しください。
         </div>
       )}
 
       {/* 🖼️ Background: Fullscreen Album Artwork with backdrop-filter: blur(24px) & Dark Gradient Overlay */}
       <div
-        className="absolute inset-0 bg-cover bg-center transition-all duration-1000 scale-110 filter blur-[24px] opacity-40"
+        className="absolute inset-0 bg-cover bg-center transition-all duration-1000 scale-110 filter blur-[24px] opacity-40 pointer-events-none"
         style={{ backgroundImage: `url(${nowPlaying.coverUrl})` }}
       />
       <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/90 pointer-events-none" />
 
-      {/* 🎛️ 1. TOP SECTION: Action Area (ONLY Mute Toggle & Skip Buttons) */}
-      <div className="relative z-10 w-full max-w-md flex justify-around items-center pt-4">
+      {/* 🎛️ 1. TOP SECTION: Action Guide & Sub-control */}
+      <div className="relative z-10 w-full max-w-md flex justify-between items-center pt-2 px-2 pointer-events-none">
+        <div className="text-xs uppercase tracking-widest text-emerald-400/80 font-bold">
+          画面のどこでもタップでスキップ ⏭️
+        </div>
         <button
-          onClick={handleToggleMute}
-          className={`flex items-center gap-2 px-6 py-3.5 transition active:scale-95 backdrop-blur-md rounded-full border text-sm font-bold shadow-xl cursor-pointer ${
+          onClick={(e) => {
+            e.stopPropagation();
+            handleToggleMute();
+          }}
+          className={`flex items-center gap-2 px-5 py-2.5 transition active:scale-95 backdrop-blur-md rounded-full border text-xs font-bold shadow-xl cursor-pointer pointer-events-auto ${
             isMuted
               ? "bg-rose-500/20 border-rose-400/50 text-rose-300 hover:bg-rose-500/30"
               : "bg-white/10 border-white/20 text-white hover:bg-white/20"
           }`}
         >
-          <span className="text-lg">{isMuted ? "🔇" : "🔊"}</span>
-          <span>{isMuted ? "解除" : "消音"}</span>
-        </button>
-
-        <button
-          onClick={() => handleSkip()}
-          className="flex items-center gap-2.5 px-8 py-3.5 bg-white text-black hover:bg-neutral-200 active:scale-95 transition rounded-full text-sm font-extrabold shadow-2xl cursor-pointer"
-        >
-          <span>スキップ</span>
-          <span className="text-lg">⏭</span>
+          <span className="text-base">{isMuted ? "🔇" : "🔊"}</span>
+          <span>{isMuted ? "消音中" : "音声ON"}</span>
         </button>
       </div>
 
-      {/* 2. CENTER-UPPER SECTION: 完全独立型 60fps リアルタイム波形 (FluidOrganicEqualizer) */}
-      <div className="relative z-10 w-full flex-1 flex items-center justify-center my-4">
-        <FluidOrganicEqualizer isPlaying={isPlaying && !isMuted} />
+      {/* 2. CENTER SECTION: 巨大アルバムアート ＆ リアルタイム波形 */}
+      <div className="relative z-10 w-full flex-1 flex flex-col items-center justify-center my-2 space-y-4 pointer-events-none">
+        {/* 巨大アルバムアート */}
+        <div className="w-56 h-56 sm:w-72 sm:h-72 md:w-80 md:h-80 rounded-3xl shadow-2xl overflow-hidden border border-white/15 transition-transform duration-500">
+          {nowPlaying.coverUrl ? (
+            <img
+              src={nowPlaying.coverUrl}
+              alt={nowPlaying.title}
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="w-full h-full bg-white/5 flex items-center justify-center text-5xl">
+              📻
+            </div>
+          )}
+        </div>
+
+        {/* 60fps 波形 */}
+        <div className="w-full flex justify-center">
+          <FluidOrganicEqualizer isPlaying={isPlaying && !isMuted} />
+        </div>
       </div>
 
       {/* 3. CENTER-LOWER SECTION: Track Metadata */}
-      <div className="relative z-10 text-center space-y-2 mb-20 transition-all duration-300 transform">
-        <h1 className="text-3xl sm:text-5xl font-black tracking-tight drop-shadow-lg text-white">
-          {nowPlaying.title}
+      <div className="relative z-10 text-center space-y-2 mb-20 transition-all duration-300 transform max-w-md px-4 pointer-events-none">
+        <h1 className="text-2xl sm:text-4xl md:text-5xl font-black tracking-tight drop-shadow-lg text-white line-clamp-1">
+          {nowPlaying.title || "ラジオを準備中..."}
         </h1>
-        <p className="text-base sm:text-xl text-emerald-400 font-bold tracking-wide">
-          {nowPlaying.artist}
+        <p className="text-base sm:text-xl text-emerald-400 font-bold tracking-wide line-clamp-1">
+          {nowPlaying.artist || "画面をタップして開始"}
         </p>
       </div>
 
-      {/* 🌟 改修: 下部コントロールエリア (ガラスモフィズムUI) ＆ 巨大透明スキップタップ領域 */}
+      {/* 4. BOTTOM SECTION: ガラスモフィズムコントロール ＆ 巨大スキップタップ領域 */}
       <div className="fixed bottom-0 left-0 right-0 p-4 sm:p-6 md:p-8 z-50 pointer-events-auto">
         <div className="max-w-md mx-auto relative backdrop-blur-xl bg-black/40 rounded-3xl border border-white/10 p-5 flex items-center justify-between shadow-2xl overflow-hidden">
           {/* 左側: 曲情報 ＆ 再生タイマー */}
@@ -1514,7 +1549,7 @@ export default function RadioPlayer() {
                 e.stopPropagation();
                 handleToggleMute();
               }}
-              className={`p-3 rounded-full border text-base font-bold shadow-lg transition active:scale-95 cursor-pointer ${
+              className={`p-3 rounded-full border text-base font-bold shadow-lg transition active:scale-95 cursor-pointer pointer-events-auto ${
                 isMuted
                   ? "bg-rose-500/30 border-rose-400 text-rose-300"
                   : "bg-white/10 border-white/20 text-white hover:bg-white/20"
@@ -1528,10 +1563,13 @@ export default function RadioPlayer() {
             </div>
           </div>
 
-          {/* 🌟 改修: 透明な巨大スキップタップ領域 (パネル全体を覆う) */}
+          {/* 透明スキップタップ領域 (下部パネル内) */}
           <div
             className="absolute inset-0 cursor-pointer active:bg-white/10 transition-colors rounded-3xl z-10"
-            onClick={() => handleSkip()}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleSkip();
+            }}
             title="画面下部をタップでスキップ (ドライブモード)"
           />
         </div>
