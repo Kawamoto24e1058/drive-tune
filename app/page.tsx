@@ -524,20 +524,20 @@ const fetchFailSafeRadioPool = async (
       return result;
     };
 
-    // --- A. 🌟 100% 成功する URLSearchParams 検索 (/v1/search) (約 60% ➔ 15曲) ---
-    // プリセットからランダムに 3 名の有名アーティストを抽出して楽曲検索
-    const selectedArtists = shuffleArray(FAMOUS_ERA_ARTISTS).slice(0, 3);
+    // --- A. 🌟 ダブルクオーテーション無しのプレーンアーティスト検索 (/v1/search) (約 60% ➔ 15曲) ---
+    const selectedArtists = shuffleArray(FAMOUS_ERA_ARTISTS).slice(0, 4);
     console.log(`📻 [Fail-Safe Search] Searching famous artists: ${selectedArtists.join(", ")}`);
 
     let rawFamousSearch: any[] = [];
 
     for (const artistName of selectedArtists) {
+      // 🔥 ダブルクオーテーション (") を除去して q: artistName で安全検索
       const searchParams = new URLSearchParams({
-        q: `artist:"${artistName}"`,
+        q: artistName,
         type: "track",
         market: "JP",
         limit: "15",
-        offset: Math.floor(Math.random() * 3).toString(), // 小さなオフセットで確実にヒットさせる
+        offset: Math.floor(Math.random() * 2).toString(),
       });
 
       const searchRes = await fetchWithAuth(
@@ -583,7 +583,7 @@ const fetchFailSafeRadioPool = async (
 
     // --- D. 統合 ＆ シャッフル ---
     const finalPool = shuffleArray([
-      ...famousTracks, // 15曲 (有名・年代ヒット曲)
+      ...famousTracks, // 15曲 (有名アーティスト名曲)
       ...savedTracks,  // 6曲  (お気に入り保存曲)
       ...topTracks,    // 4曲  (トップトラック)
     ]);
@@ -594,11 +594,11 @@ const fetchFailSafeRadioPool = async (
 
     return {
       pool: finalPool.length > 0 ? finalPool : SEED_LIBRARY,
-      timeLabel: `Radio: ${selectedArtists[0]} Stream 📻`,
+      timeLabel: "Drive Tune Radio 📻",
     };
   } catch (err) {
     console.error("Critical error in radio pool builder:", err);
-    return { pool: SEED_LIBRARY, timeLabel: "Fail-Safe Radio 📻" };
+    return { pool: SEED_LIBRARY, timeLabel: "Drive Tune Radio 📻" };
   }
 };
 
