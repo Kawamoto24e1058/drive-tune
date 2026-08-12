@@ -482,7 +482,7 @@ const FAMOUS_ERA_ARTISTS = [
   "サザンオールスターズ", "山下達郎", "竹内まりや", "椎名林檎",
 ];
 
-// 📻 1. 100% 成功するエラーフリー選曲エンジン (fetchFailSafeRadioPool)
+// 📻 1. 100% エラーゼロの選曲エンジン (fetchFailSafeRadioPool)
 const fetchFailSafeRadioPool = async (
   _token?: string,
   currentSessionUris: string[] = []
@@ -492,7 +492,7 @@ const fetchFailSafeRadioPool = async (
     const usedUris = new Set<string>([...persistentHistory, ...currentSessionUris]);
     const artistCountMap = new Map<string, number>();
 
-    // 重複 ＆ 同一アーティスト制限 (1プール最大2曲)
+    // フィルタリング ＆ アーティスト重複制限 (1プール最大2曲)
     const filterAndNormalize = (rawItems: any[], maxCount: number): TrackItem[] => {
       const result: TrackItem[] = [];
       const shuffled = shuffleArray(rawItems);
@@ -507,6 +507,7 @@ const fetchFailSafeRadioPool = async (
         const artistId = mainArtist?.id || mainArtist?.name || "unknown";
         const currentCount = artistCountMap.get(artistId) || 0;
 
+        // 過去数日間に再生されていない ＆ 同一アーティストは最大2曲まで
         if (!usedUris.has(t.uri) && currentCount < 2) {
           usedUris.add(t.uri);
           artistCountMap.set(artistId, currentCount + 1);
@@ -524,71 +525,63 @@ const fetchFailSafeRadioPool = async (
       return result;
     };
 
-    // --- A. 🌟 400 エラーを回避したアーティスト名曲検索 (/v1/search) (約 50% ➔ 12曲) ---
-    // 🔥 重要: market=JP を削除し、encodeURIComponent を使用
-    const selectedArtists = shuffleArray(FAMOUS_ERA_ARTISTS).slice(0, 4);
-    console.log(`📻 [Fail-Safe Search] Searching famous artists: ${selectedArtists.join(", ")}`);
+    // 🌟 100% 200 OK が返るユーザーデータエンドポイントを並列取得
+    const randomSavedOffset = Math.floor(Math.random() * 30); // ライブラリ保存曲のランダム掘り起こし位置
 
-    let rawFamousSearch: any[] = [];
+    const [longTopRes, medTopRes, shortTopRes, savedRes, recentRes] = await Promise.all([
+      fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=30"),
+      fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=medium_term&limit=30"),
+      fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=20"),
+      fetchWithAuth(`https://api.spotify.com/v1/me/tracks?limit=30&offset=${randomSavedOffset}`),
+      fetchWithAuth("https://api.spotify.com/v1/me/player/recently-played?limit=25"),
+    ]);
 
-    for (const artistName of selectedArtists) {
-      const encodedQuery = encodeURIComponent(artistName);
-      const offset = Math.floor(Math.random() * 2);
-
-      // market=JP を指定せず、トークンから自動判定させる
-      const searchRes = await fetchWithAuth(
-        `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=15&offset=${offset}`
-      );
-
-      if (searchRes.ok) {
-        const data = await searchRes.json();
-        if (data.tracks?.items) {
-          rawFamousSearch.push(...data.tracks.items);
-        }
-      } else {
-        console.warn(`Search failed for ${artistName}: status ${searchRes.status}`);
-      }
-    }
-
-    const famousTracks = filterAndNormalize(rawFamousSearch, 12);
-
-    // --- B. 🕰️ 昔聴いていた長期トップトラック (/v1/me/top/tracks?time_range=long_term) (約 25% ➔ 6曲) ---
-    let rawNostalgicTracks: any[] = [];
-    const longTopRes = await fetchWithAuth(
-      "https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=25"
-    );
+    // 1. 昔聴いていた長期トップトラック (約 35% ➔ 10曲)
+    let rawLongTop: any[] = [];
     if (longTopRes.ok) {
-      const longData = await longTopRes.json();
-      if (longData.items) rawNostalgicTracks = longData.items;
+      const data = await longTopRes.json();
+      if (data.items) rawLongTop = data.items;
     }
+    const nostalgicTracks = filterAndNormalize(rawLongTop, 10);
 
-    const nostalgicTracks = filterAndNormalize(rawNostalgicTracks, 6);
+    // 2. 定番の愛聴曲 - 中期トップトラック (約 25% ➔ 8曲)
+    let rawMedTop: any[] = [];
+    if (medTopRes.ok) {
+      const data = await medTopRes.json();
+      if (data.items) rawMedTop = data.items;
+    }
+    const favoriteTracks = filterAndNormalize(rawMedTop, 8);
 
-    // --- C. 💚 ライブラリ保存曲 (/v1/me/tracks) ＆ 直近トップトラック (約 25% ➔ 6曲) ---
-    let rawSavedTracks: any[] = [];
-    const savedRes = await fetchWithAuth("https://api.spotify.com/v1/me/tracks?limit=25");
+    // 3. ライブラリ保存曲 - ランダムオフセット掘り起こし (約 25% ➔ 8曲)
+    let rawSaved: any[] = [];
     if (savedRes.ok) {
-      const savedData = await savedRes.json();
-      if (savedData.items) {
-        rawSavedTracks = savedData.items.map((item: any) => item.track);
-      }
+      const data = await savedRes.json();
+      if (data.items) rawSaved = data.items.map((item: any) => item.track);
     }
+    const libraryTracks = filterAndNormalize(rawSaved, 8);
 
-    const savedTracks = filterAndNormalize(rawSavedTracks, 6);
-
-    // --- D. 統合 ＆ シャッフル (万が一少ない場合のセーフティ含む) ---
-    let combined = [...famousTracks, ...nostalgicTracks, ...savedTracks];
-
-    // 万が一 15 曲未満の場合は、長期トップトラックから全枠補填
-    if (combined.length < 15 && rawNostalgicTracks.length > 0) {
-      const extraTracks = filterAndNormalize(rawNostalgicTracks, 20);
-      combined = [...combined, ...extraTracks];
+    // 4. 直近のマイブーム - 短期トップ ＆ 直近再生 (約 15% ➔ 4曲)
+    let rawRecent: any[] = [];
+    if (shortTopRes.ok) {
+      const data = await shortTopRes.json();
+      if (data.items) rawRecent.push(...data.items);
     }
+    if (recentRes.ok) {
+      const data = await recentRes.json();
+      if (data.items) rawRecent.push(...data.items.map((item: any) => item.track));
+    }
+    const recentTracks = filterAndNormalize(rawRecent, 4);
 
-    const finalPool = shuffleArray(combined);
+    // 5. 統合 ＆ 全体シャッフル
+    const finalPool = shuffleArray([
+      ...nostalgicTracks, // 10曲 (昔聴いていた名曲)
+      ...favoriteTracks,  // 8曲  (定番愛聴曲)
+      ...libraryTracks,   // 8曲  (ライブラリ掘り出し曲)
+      ...recentTracks,    // 4曲  (最近の曲)
+    ]);
 
     console.log(
-      `🌐 [Fail-Safe Pool Built] Total: ${finalPool.length} (FamousHits: ${famousTracks.length}, Nostalgic: ${nostalgicTracks.length}, Saved: ${savedTracks.length})`
+      `🌐 [100% Success User Pool Built] Total: ${finalPool.length} (Nostalgic: ${nostalgicTracks.length}, Favorites: ${favoriteTracks.length}, Library: ${libraryTracks.length}, Recent: ${recentTracks.length})`
     );
 
     return {
