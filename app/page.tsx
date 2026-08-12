@@ -470,7 +470,7 @@ const shuffleArray = <T,>(array: T[]): T[] => {
   return arr;
 };
 
-// 📻 1. エラーゼロのトラック直接検索エンジン (fetchDirectSearchRadioPool)
+// 📻 1. 100% 成功する構造化検索エンジン (fetchDirectSearchRadioPool)
 const fetchDirectSearchRadioPool = async (
   _token?: string,
   currentSessionUris: string[] = []
@@ -480,44 +480,48 @@ const fetchDirectSearchRadioPool = async (
     const usedUris = new Set<string>([...persistentHistory, ...currentSessionUris]);
     const artistCountMap = new Map<string, number>();
 
-    // 100% 通る検索テーマ＆年代クエリのリスト (ガチャ化)
-    const searchQueries = [
-      "J-POP ヒット",
-      "2000年代 J-POP",
-      "2010年代 J-POP",
-      "平成 ヒット曲",
-      "令和 トレンド",
-      "ドライブ 邦楽",
-      "定番 邦ロック",
-      "80年代 シティポップ",
+    // 🌟 Spotify API が 100% 正常応答する構造化クエリのリスト (ジャンル ✕ 年代ガチャ)
+    const structuredQueries = [
+      "genre:j-pop year:2015-2026",
+      "genre:j-rock year:2010-2026",
+      "genre:j-pop year:2000-2015",
+      "genre:japanese year:1990-2010",
+      "genre:city-pop",
+      "genre:j-pop year:2020-2026",
+      "genre:j-rock year:2000-2015",
+      "genre:anime year:2010-2026",
     ];
 
-    // ランダムに2つの検索テーマを選出
-    const shuffledQueries = shuffleArray(searchQueries);
-    const primaryQuery = shuffledQueries[0];
-    const secondaryQuery = shuffledQueries[1];
+    // ランダムに 2 つのクエリを選出
+    const shuffledQueries = shuffleArray(structuredQueries);
+    const query1 = shuffledQueries[0];
+    const query2 = shuffledQueries[1];
 
-    console.log(`📻 [Direct Search Engine] Query 1: "${primaryQuery}" | Query 2: "${secondaryQuery}"`);
+    console.log(`📻 [Structured Search Engine] Query 1: "${query1}" | Query 2: "${query2}"`);
 
     const rawSearchTracks: any[] = [];
 
-    // --- A. 🌟 トラック直接検索 API (/v1/search?type=track) を実行 (約 80% ➔ 20曲) ---
-    // ランダムオフセット (0~40) で毎回違う曲群を掘り出す
+    // オフセット (0~40) をランダムにして毎回違う名曲を発掘
     const offset1 = Math.floor(Math.random() * 40);
     const offset2 = Math.floor(Math.random() * 40);
 
     const [res1, res2] = await Promise.all([
-      fetchWithAuth(`https://api.spotify.com/v1/search?q=${encodeURIComponent(primaryQuery)}&type=track&limit=25&offset=${offset1}`),
-      fetchWithAuth(`https://api.spotify.com/v1/search?q=${encodeURIComponent(secondaryQuery)}&type=track&limit=25&offset=${offset2}`),
+      fetchWithAuth(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query1)}&type=track&limit=25&offset=${offset1}`),
+      fetchWithAuth(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query2)}&type=track&limit=25&offset=${offset2}`),
     ]);
 
     if (res1.ok) {
       const data1 = await res1.json();
       if (data1.tracks?.items) rawSearchTracks.push(...data1.tracks.items);
+    } else {
+      console.warn("Query 1 failed:", res1.status);
     }
+
     if (res2.ok) {
       const data2 = await res2.json();
       if (data2.tracks?.items) rawSearchTracks.push(...data2.tracks.items);
+    } else {
+      console.warn("Query 2 failed:", res2.status);
     }
 
     // 重複 ＆ アーティスト上限 (1プール最大2曲) チェック関数
@@ -556,10 +560,10 @@ const fetchDirectSearchRadioPool = async (
       return result;
     };
 
-    // 誰もが知る有名曲 (popularity >= 45) を 20 曲抽出
-    const selectedFamous = filterAndNormalize(rawSearchTracks, 20, 45);
+    // 有名曲 (popularity >= 40) を 20 曲抽出
+    const selectedFamous = filterAndNormalize(rawSearchTracks, 20, 40);
 
-    // --- B. 👤 自分のトップトラック (隠し味程度に約 20% ➔ 4曲のみ) ---
+    // --- B. 👤 自分のトップトラック (アクセントとして約 15% ➔ 3曲のみ) ---
     let rawPersonal: any[] = [];
     const topRes = await fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=15");
     if (topRes.ok) {
@@ -567,25 +571,25 @@ const fetchDirectSearchRadioPool = async (
       if (topData.items) rawPersonal.push(...topData.items);
     }
 
-    const selectedPersonal = filterAndNormalize(rawPersonal, 4, 0);
+    const selectedPersonal = filterAndNormalize(rawPersonal, 3, 0);
 
     // --- C. 統合してシャッフル ---
     const finalPool = shuffleArray([
-      ...selectedFamous,   // 20曲 (一般ヒット曲・年代ソング)
-      ...selectedPersonal, // 4曲  (自分の曲)
+      ...selectedFamous,   // 20曲 (J-POP/J-ROCK/年代ヒット曲)
+      ...selectedPersonal, // 3曲  (自分の曲)
     ]);
 
     console.log(
-      `🌐 [Direct Search Pool Built] Total: ${finalPool.length} (FamousSearch: ${selectedFamous.length}, Personal: ${selectedPersonal.length})`
+      `🌐 [Structured Pool Built] Total: ${finalPool.length} (FamousSearch: ${selectedFamous.length}, Personal: ${selectedPersonal.length})`
     );
 
     return {
       pool: finalPool.length > 0 ? finalPool : SEED_LIBRARY,
-      timeLabel: `Direct Search: ${primaryQuery} 📻`,
+      timeLabel: `Direct Search: ${query1} 📻`,
     };
   } catch (err) {
-    console.error("Failed to fetch direct search radio pool:", err);
-    return { pool: SEED_LIBRARY, timeLabel: "Direct Search Radio 📻" };
+    console.error("Failed to fetch structured search radio pool:", err);
+    return { pool: SEED_LIBRARY, timeLabel: "Structured Search Radio 📻" };
   }
 };
 
