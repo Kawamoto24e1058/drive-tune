@@ -2,7 +2,7 @@ import { SpotifyTrack, SpotifyUser, SpotifyRecommendationsResponse, SpotifyArtis
 import { AudioTargetParams } from '@/types/drive';
 
 // Standard Spotify Scopes for DriveTuner (Hardcoded %20 String including Player API Scopes)
-export const SPOTIFY_SCOPES = 'user-read-private user-read-email user-top-read playlist-modify-public playlist-modify-private user-modify-playback-state user-read-playback-state';
+export const SPOTIFY_SCOPES = 'user-read-private user-read-email streaming user-read-playback-state user-modify-playback-state user-top-read user-read-recently-played playlist-modify-public playlist-modify-private';
 
 // Major Japanese & City Pop track IDs verified on Spotify JP Market
 export const DEFAULT_FALLBACK_SEED_TRACKS = [
