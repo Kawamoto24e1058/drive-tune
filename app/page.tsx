@@ -470,24 +470,20 @@ const shuffleArray = <T,>(array: T[]): T[] => {
   return arr;
 };
 
-// 📻 3. 日またぎ自動除外付き選曲エンジンの更新 (fetchFamousBalancedTrackPool)
-const fetchFamousBalancedTrackPool = async (
+// 📻 1. 公開プレイリスト直結型選曲エンジン (fetchPublicRadioPool)
+const fetchPublicRadioPool = async (
   _token?: string,
   currentSessionUris: string[] = []
 ): Promise<{ pool: TrackItem[]; timeLabel: string }> => {
   try {
-    // 🌟 日またぎ履歴 (localStorage) + 今のセッション再生済み URI を完全合体して除外対象に設定
     const persistentHistory = getPersistentPlayedUris();
     const usedUris = new Set<string>([...persistentHistory, ...currentSessionUris]);
-
-    const searchConfig = getRandomSearchConfig();
-    console.log(
-      `📻 [Cross-Day Engine] Active Search Query: "${searchConfig.query}" | Excluded History: ${usedUris.size} tracks`
-    );
-
     const artistCountMap = new Map<string, number>();
 
-    const addControlledTracks = (rawTracks: any[], maxCount: number, minPopularity: number = 0): TrackItem[] => {
+    console.log(`📻 [Public Chart Engine] Excluded history count: ${usedUris.size}`);
+
+    // ヘルパー: 重複 ＆ アーティスト上限 (最大2曲) チェック
+    const filterAndNormalize = (rawTracks: any[], maxCount: number, minPopularity: number = 0): TrackItem[] => {
       const result: TrackItem[] = [];
       const shuffled = shuffleArray(rawTracks);
 
@@ -502,12 +498,11 @@ const fetchFamousBalancedTrackPool = async (
 
         const mainArtist = t.artists?.[0];
         const artistId = mainArtist?.id || mainArtist?.name || "unknown";
-        const currentArtistCount = artistCountMap.get(artistId) || 0;
+        const currentCount = artistCountMap.get(artistId) || 0;
 
-        // 🌟 過去数日間に再生された曲は完全に排除！ 同一アーティストは最大2曲まで
-        if (!usedUris.has(t.uri) && currentArtistCount < 2) {
+        if (!usedUris.has(t.uri) && currentCount < 2) {
           usedUris.add(t.uri);
-          artistCountMap.set(artistId, currentArtistCount + 1);
+          artistCountMap.set(artistId, currentCount + 1);
 
           result.push({
             uri: t.uri,
@@ -522,63 +517,110 @@ const fetchFamousBalancedTrackPool = async (
       return result;
     };
 
-    // --- A. 🔥 最近聴いている曲 (最大 20% ➔ 5曲に制限して新鮮さを重視) ---
-    let rawRecent: any[] = [];
-    const [recentRes, shortTopRes] = await Promise.all([
-      fetchWithAuth("https://api.spotify.com/v1/me/player/recently-played?limit=20"),
-      fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=20"),
-    ]);
-    if (recentRes.ok) rawRecent.push(...((await recentRes.json()).items || []));
-    if (shortTopRes.ok) rawRecent.push(...((await shortTopRes.json()).items || []));
+    // --- A. 🌟 年代・テーマ別の公開ヒットプレイリストから直接マイニング (約 70% ➔ 18曲) ---
+    const hour = new Date().getHours();
+    const playlistQueries = [
+      "J-POP ヒット",
+      "平成ヒッツ",
+      "2010年代 J-POP",
+      "2000年代 J-POP",
+      "令和ヒットチャート",
+      "ドライブ 邦楽",
+      "定番 邦ロック",
+    ];
 
-    const selectedRecent = addControlledTracks(rawRecent, 5, 0);
+    if (hour >= 5 && hour < 10) playlistQueries.unshift("朝 爽やか 邦楽");
+    else if (hour >= 17 && hour < 22) playlistQueries.unshift("夜ドライブ エモい");
 
-    // --- B. 🌟 日替わり検索 ＆ 大オフセット有名曲 (約 50% ➔ 15曲) ---
-    // オフセットを 0~80 まで大きく散らして毎回違う曲群を発掘
-    const randomOffset = Math.floor(Math.random() * 80);
-    const searchRes = await fetchWithAuth(
-      `https://api.spotify.com/v1/search?q=${encodeURIComponent(searchConfig.query)}&type=track&limit=40&offset=${randomOffset}`
+    const targetQuery = playlistQueries[Math.floor(Math.random() * playlistQueries.length)];
+    console.log(`📻 [Public Mining] Searching public playlists with query: "${targetQuery}"`);
+
+    let rawPublicTracks: any[] = [];
+
+    // 1. 公開プレイリストを検索 (type=playlist)
+    const searchPlaylistsRes = await fetchWithAuth(
+      `https://api.spotify.com/v1/search?q=${encodeURIComponent(targetQuery)}&type=playlist&limit=10`
     );
 
-    let rawFamous: any[] = [];
-    if (searchRes.ok) {
-      const searchData = await searchRes.json();
-      if (searchData.tracks?.items) rawFamous.push(...searchData.tracks.items);
+    if (searchPlaylistsRes.ok) {
+      const playlistData = await searchPlaylistsRes.json();
+      const playlists: any[] = playlistData.playlists?.items || [];
+
+      if (playlists.length > 0) {
+        // ランダムに 2〜3 個の公開プレイリストを選出し、その中の曲を直接取得
+        const selectedPlaylists = shuffleArray(playlists).slice(0, 3);
+
+        for (const pl of selectedPlaylists) {
+          if (!pl || !pl.id) continue;
+          const plTracksRes = await fetchWithAuth(
+            `https://api.spotify.com/v1/playlists/${pl.id}/tracks?limit=30`
+          );
+          if (plTracksRes.ok) {
+            const plTracksData = await plTracksRes.json();
+            if (plTracksData.items) {
+              rawPublicTracks.push(...plTracksData.items);
+            }
+          }
+        }
+      }
     }
 
-    const selectedFamous = addControlledTracks(rawFamous, 15, 55);
+    // 人気度 50 以上の「みんなが知っているヒット曲」を 18 曲抽出
+    const selectedPublic = filterAndNormalize(rawPublicTracks, 18, 50);
 
-    // --- C. ✨ 好みに寄せた未知の曲 (約 30% ➔ 10曲) ---
-    const broadGenres = ["j-pop", "pop", "rock", "anime", "dance", "acoustic", "chill", "r-n-b"];
-    const randGenre = broadGenres[Math.floor(Math.random() * broadGenres.length)];
+    // --- B. ✨ 純粋なジャンル Recommendations (約 20% ➔ 6曲) ---
+    let rawRecs: any[] = [];
+    const genres = ["j-pop", "j-rock", "pop"];
+    const randGenre = genres[Math.floor(Math.random() * genres.length)];
 
     const recRes = await fetchWithAuth(
-      `https://api.spotify.com/v1/recommendations?limit=30&seed_genres=${randGenre}&target_energy=${searchConfig.targetEnergy}`
+      `https://api.spotify.com/v1/recommendations?limit=20&seed_genres=${randGenre}&min_popularity=60`
     );
-    let rawDiscovery: any[] = [];
-    if (recRes.ok) rawDiscovery.push(...((await recRes.json()).tracks || []));
+    if (recRes.ok) {
+      const recData = await recRes.json();
+      if (recData.tracks) rawRecs.push(...recData.tracks);
+    }
 
-    const selectedDiscovery = addControlledTracks(rawDiscovery, 10, 40);
+    const selectedDiscovery = filterAndNormalize(rawRecs, 6, 50);
 
-    // --- D. 統合して最終シャッフル ---
+    // --- C. 👤 自分のトップトラック (隠し味程度に約 10% ➔ 3曲のみ) ---
+    let rawPersonal: any[] = [];
+    const topRes = await fetchWithAuth(
+      "https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=15"
+    );
+    if (topRes.ok) {
+      const topData = await topRes.json();
+      if (topData.items) rawPersonal.push(...topData.items);
+    }
+
+    const selectedPersonal = filterAndNormalize(rawPersonal, 3, 0);
+
+    // --- D. 統合してシャッフル ---
     const finalPool = shuffleArray([
-      ...selectedRecent,    // 5曲
-      ...selectedFamous,    // 15曲
-      ...selectedDiscovery, // 10曲
+      ...selectedPublic,    // 18曲 (約70%: 公開ヒット/年代ヒット)
+      ...selectedDiscovery, // 6曲  (約20%: ジャンル人気曲)
+      ...selectedPersonal,  // 3曲  (約10%: 自分の曲)
     ]);
 
-    console.log(`🌐 [Famous Cross-Day Pool] Generated ${finalPool.length} fresh tracks for ${searchConfig.label}.`);
-    return { pool: finalPool.length > 0 ? finalPool : SEED_LIBRARY, timeLabel: searchConfig.label };
+    console.log(
+      `🌐 [Public Radio Pool Built] Total: ${finalPool.length} (PublicPlaylists: ${selectedPublic.length}, PureGenre: ${selectedDiscovery.length}, Personal: ${selectedPersonal.length}) for query: ${targetQuery}`
+    );
+
+    return {
+      pool: finalPool.length > 0 ? finalPool : SEED_LIBRARY,
+      timeLabel: `Chart Stream: ${targetQuery} 📻`,
+    };
   } catch (err) {
-    console.error("Failed to fetch famous cross-day track pool:", err);
-    return { pool: SEED_LIBRARY, timeLabel: "Drive Radio 📻" };
+    console.error("Failed to fetch public radio pool:", err);
+    return { pool: SEED_LIBRARY, timeLabel: "Public Chart Radio 📻" };
   }
 };
 
-const fetch30_35_35TrackPool = fetchFamousBalancedTrackPool;
-const fetch40_30_30TrackPool = fetchFamousBalancedTrackPool;
-const fetch60_20_20TrackPool = fetchFamousBalancedTrackPool;
-const fetchHybridTrackPool = fetchFamousBalancedTrackPool;
+const fetchFamousBalancedTrackPool = fetchPublicRadioPool;
+const fetch30_35_35TrackPool = fetchPublicRadioPool;
+const fetch40_30_30TrackPool = fetchPublicRadioPool;
+const fetch60_20_20TrackPool = fetchPublicRadioPool;
+const fetchHybridTrackPool = fetchPublicRadioPool;
 
 // 🎵 2. クールダウン（重複・連続再生防止）付き選曲ロジック
 const selectNextTrackWithCooldown = (
