@@ -505,7 +505,7 @@ const fetchNextTrackOnTheFly = async (): Promise<TrackItem | null> => {
   return null;
 };
 
-// 📻 2. 動的マイニング連動 85:15 エラーフリー選曲プール生成エンジン (fetchTimeAdaptiveRadioPool)
+// 📻 2. サーバーマイニング連動 90:10 選曲プール生成エンジン (fetchTimeAdaptiveRadioPool)
 const fetchTimeAdaptiveRadioPool = async (
   _token?: string,
   currentSessionUris: string[] = []
@@ -514,10 +514,10 @@ const fetchTimeAdaptiveRadioPool = async (
     const persistentHistory = getPersistentPlayedUris();
     const usedUris = new Set<string>([...persistentHistory, ...currentSessionUris]);
 
-    // 🌟 1. サーバーAPI (/api/radio) から動的マイニングされた最新チャート曲を大量取得 (12〜15曲)
+    // 🌟 1. サーバー API (/api/radio) から世間のヒット曲・年代名曲を 18 曲取得
     let freshChartTracks: TrackItem[] = [];
     try {
-      const apiRes = await fetch(`/api/radio?t=${Date.now()}`); // キャッシュ回避
+      const apiRes = await fetch(`/api/radio?t=${Date.now()}`);
       if (apiRes.ok) {
         const data = await apiRes.json();
         if (data.tracks && Array.isArray(data.tracks)) {
@@ -532,10 +532,10 @@ const fetchTimeAdaptiveRadioPool = async (
         }
       }
     } catch (e) {
-      console.error("Failed to fetch fresh chart tracks from API:", e);
+      console.error("Failed to fetch fresh tracks from API:", e);
     }
 
-    // 🌟 2. 自分の過去の再生履歴からは「最大 2曲」だけに厳密制限！ (15%)
+    // 🌟 2. 自分の過去履歴からは「最大 2曲」のみ抽出
     let rawUserTracks: any[] = [];
     const userRes = await fetchWithAuth(
       "https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=10"
@@ -559,11 +559,11 @@ const fetchTimeAdaptiveRadioPool = async (
       }
     }
 
-    // 3. 動的ヒット曲(12〜15曲) ＋ 自分の曲(2曲) を合体してシャッフル
+    // 3. ヒット曲(18曲) ＋ 自分の曲(2曲) を合体してシャッフル
     const finalPool = shuffleArray([...freshChartTracks, ...userPersonalTracks]);
 
     console.log(
-      `🌐 [Dynamic Chart Radio Pool] Total: ${finalPool.length} (FreshChartHits: ${freshChartTracks.length}, UserPersonal: ${userPersonalTracks.length})`
+      `🌐 [Server-Mined Radio Pool] Total: ${finalPool.length} (FreshChartHits: ${freshChartTracks.length}, UserPersonal: ${userPersonalTracks.length})`
     );
 
     return {
@@ -571,7 +571,7 @@ const fetchTimeAdaptiveRadioPool = async (
       timeLabel: "Drive Tune Radio 📻",
     };
   } catch (err) {
-    console.error("Critical error in dynamic chart radio pool builder:", err);
+    console.error("Critical error in radio pool builder:", err);
     return { pool: SEED_LIBRARY, timeLabel: "Drive Tune Radio 📻" };
   }
 };
@@ -702,11 +702,16 @@ export default function RadioPlayer() {
   const [historyArtists, setHistoryArtists] = useState<string[]>([]);
   const [playedUris, setPlayedUris] = useState<string[]>([]);
   const [upcomingUris, setUpcomingUris] = useState<string[]>([]);
+  // セッション内既聴 URI セット (プール補填除外用)
+  const [sessionPlayedUris, setSessionPlayedUris] = useState<Set<string>>(new Set());
+  // プール自動補填中フラグ
+  const [isRefilling, setIsRefilling] = useState(false);
 
   // 🎵 1. 再生済み履歴管理の強化 (Set & Ref の導入)
   const queuedUrisSetRef = useRef<Set<string>>(new Set()); // Spotify キューに追加済みのURI
   const playedHistoryRef = useRef<Set<string>>(new Set()); // 長期的な再生履歴 (Recommendations排除用)
   const isFillingQueueRef = useRef(false);
+  const isRefillingRef = useRef(false); // checkAndRefillPool 二重起動防止
 
   // 🔄 プール再取得時の呼び出しロジック (refreshPool)
   const refreshPool = async (customPlayedUris: string[] = playedUris) => {
@@ -717,6 +722,74 @@ export default function RadioPlayer() {
     setTrackPool(newPool);
     setActiveTimeLabel(timeLabel);
     console.log("📻 [Pool Refreshed 30:35:35] New track pool loaded excluding played URIs.");
+  };
+
+  // --- A. 再生・スキップ時の即時追放処理 ---
+  const markTrackAsPlayed = (trackUri: string) => {
+    if (!trackUri) return;
+
+    // 1. 日またぎ永続履歴 (localStorage) に保存
+    savePersistentPlayedUri(trackUri);
+
+    // 2. Ref ベースの長期履歴にも追加
+    playedHistoryRef.current.add(trackUri);
+    queuedUrisSetRef.current.add(trackUri);
+
+    // 3. セッション内既聴 Set に追加
+    setSessionPlayedUris((prev) => {
+      const next = new Set(prev);
+      next.add(trackUri);
+      return next;
+    });
+
+    // 4. 現在のプールから即座に削除（重複再生防止）
+    setTrackPool((prevPool) => prevPool.filter((t) => t.uri !== trackUri));
+
+    // 5. playedUris 配列にも追加
+    setPlayedUris((prev) => (prev.includes(trackUri) ? prev : [...prev, trackUri]));
+  };
+
+  // --- B. プール残数監視 & 新規 20 曲自動リフレッシュ ---
+  const checkAndRefillPool = async (currentPool: TrackItem[], currentSessionPlayed: Set<string>) => {
+    if (currentPool.length > 3) return;
+    if (isRefillingRef.current) return;
+
+    isRefillingRef.current = true;
+    setIsRefilling(true);
+    console.log(`🔄 [Pool Refresh] Pool low (${currentPool.length} tracks). Fetching brand-new 20 tracks...`);
+
+    try {
+      const allPlayedUris = new Set([
+        ...getPersistentPlayedUris(),
+        ...Array.from(currentSessionPlayed),
+      ]);
+
+      const res = await fetch(`/api/radio?t=${Date.now()}`);
+      if (res.ok) {
+        const data = await res.json();
+        const rawTracks: TrackItem[] = (data.tracks || []).map((t: any) => ({
+          uri: t.uri,
+          name: t.name,
+          artist: t.artist,
+          coverUrl: t.coverUrl || FALLBACK_COVER_URL,
+        }));
+
+        const freshTracks = rawTracks.filter((t) => !allPlayedUris.has(t.uri));
+        console.log(`✨ [New Pool Arrived] ${freshTracks.length} unique tracks added to queue.`);
+
+        setTrackPool((prevPool) => {
+          const combined = [...prevPool, ...freshTracks];
+          const uniqueMap = new Map<string, TrackItem>();
+          combined.forEach((item) => uniqueMap.set(item.uri, item));
+          return Array.from(uniqueMap.values());
+        });
+      }
+    } catch (err) {
+      console.error("Failed to refill pool:", err);
+    } finally {
+      isRefillingRef.current = false;
+      setIsRefilling(false);
+    }
   };
 
   // 🎵 Dynamic Shuffle ✕ Pre-loading Queue エンジンの実装 (maintainRadioQueue)
@@ -1007,6 +1080,12 @@ export default function RadioPlayer() {
     setIsFlashing(true);
     setTimeout(() => setIsFlashing(false), 150);
 
+    // スキップした曲を即座に既聴マーク & プールから除外
+    if (nowPlaying?.uri) {
+      console.log(`⏭️ [Skip] Marking as played: ${nowPlaying.title}`);
+      markTrackAsPlayed(nowPlaying.uri);
+    }
+
     try {
       console.log("⏭️ [Full Screen Tap] Fast-skipping to next track...");
       if (typeof playerRef.current.nextTrack === "function") {
@@ -1026,14 +1105,18 @@ export default function RadioPlayer() {
     const effectiveDeviceId = deviceId || (typeof window !== "undefined" ? (window as any)._lastKnownDeviceId : null);
     if (nowPlaying?.id && effectiveDeviceId) {
       if (nowPlaying.uri) {
-        queuedUrisSetRef.current.add(nowPlaying.uri);
-        playedHistoryRef.current.add(nowPlaying.uri);
-        savePersistentPlayedUri(nowPlaying.uri);
+        // 即時既聴マーク & プール除外
+        markTrackAsPlayed(nowPlaying.uri);
       }
       console.log(`🎵 [Track Changed] Now playing: ${nowPlaying.title}. Maintaining queue...`);
       maintainRadioQueue(effectiveDeviceId);
     }
   }, [nowPlaying?.id, deviceId]);
+
+  // プールの残り曲数を常時監視して自動補填を発動
+  useEffect(() => {
+    checkAndRefillPool(trackPool, sessionPlayedUris);
+  }, [trackPool.length]);
 
   const handleStartRadio = async () => {
     let effectiveDeviceId = deviceId || (typeof window !== "undefined" ? (window as any)._lastKnownDeviceId : null);
