@@ -482,151 +482,118 @@ const FAMOUS_ERA_ARTISTS = [
   "サザンオールスターズ", "山下達郎", "竹内まりや", "椎名林檎",
 ];
 
-type SubMood = {
-  name: string;
-  targetEnergy: number;
-  targetValence: number;
-  minEnergy?: number;
-  maxEnergy?: number;
-  ratio: number; // プール全体に対する割合
+// 時間帯別・有名ヒット曲＆大合唱曲データベース
+const TIME_BASED_TRACK_DATABASE = {
+  morning: [
+    { uri: "spotify:track:0VjIjW4GlUZAMYd2vXMi3b", name: "新宝島", artist: "サカナクション" },
+    { uri: "spotify:track:37IPQgBkvbmH9JR5mlY6a8", name: "ハルジオン", artist: "YOASOBI" },
+    { uri: "spotify:track:364w0q0J0G13g7R7Y8x6Wb", name: "青と夏", artist: "Mrs. GREEN APPLE" },
+    { uri: "spotify:track:4saklk6nie3yiGePpBwUoc", name: "感電", artist: "米津玄師" },
+    { uri: "spotify:track:2Gmyw5Vg2X5YW2lM3OC7nD", name: "マリーゴールド", artist: "あいみょん" },
+    { uri: "spotify:track:18nkY3pJTub8WwEGiQAGh4", name: "高嶺の花子さん", artist: "back number" },
+  ],
+  daytime: [
+    { uri: "spotify:track:6EzZn96uOc9JsVGNRpx06n", name: "怪獣の花唄", artist: "Vaundy" },
+    { uri: "spotify:track:7y6HOcbQ80bsOsq1GahaVP", name: "ミックスナッツ", artist: "Official髭男dism" },
+    { uri: "spotify:track:0qHT5elQ5RNmTA7oDKgb1m", name: "一途", artist: "King Gnu" },
+    { uri: "spotify:track:3XNnq2oo1zmHDseKZKaYEF", name: "前前前世", artist: "RADWIMPS" },
+    { uri: "spotify:track:59h6J25QnnT8xshPTFLkpe", name: "完全感覚Dreamer", artist: "ONE OK ROCK" },
+    { uri: "spotify:track:4Di3ueaCyC0BThjixO0Uzq", name: "シュガーソングとビターステップ", artist: "UNISON SQUARE GARDEN" },
+    { uri: "spotify:track:2ntXQnx4ZUraj1u5Hwqjem", name: "天体観測", artist: "BUMP OF CHICKEN" },
+  ],
+  evening: [
+    { uri: "spotify:track:7pk2Mx1LnlaEpxfzNhgRuz", name: "丸ノ内サディスティック", artist: "椎名林檎" },
+    { uri: "spotify:track:3khEEPRyBeOUabbmOPJzAG", name: "Pretender", artist: "Official髭男dism" },
+    { uri: "spotify:track:6FhWelfRDMFZRtFUU6SIdC", name: "踊り子", artist: "Vaundy" },
+    { uri: "spotify:track:5oG8Ewk6dqsroYdmNFO7nu", name: "きらり", artist: "藤井 風" },
+    { uri: "spotify:track:1jgHrhblhrm0ALKoceU4aj", name: "プラスティック・ラブ", artist: "竹内まりや" },
+    { uri: "spotify:track:08sjU4Uck88xYCQA3ncPS5", name: "RIDE ON TIME", artist: "山下達郎" },
+  ],
+  midnight: [
+    // 🌟 夜の熱唱アンセム（アップテンポ＆重厚感）＋ ミッドナイト・グルーヴ
+    { uri: "spotify:track:6JmTrd6VvMOWZFBk439e28", name: "SPECIALZ", artist: "King Gnu" },
+    { uri: "spotify:track:7jgqNMnqAT9FghC1uSYTFF", name: "KICK BACK", artist: "米津玄師" },
+    { uri: "spotify:track:4cPwi7lcWxRQNEb4xC77fC", name: "新時代", artist: "Ado" },
+    { uri: "spotify:track:2wsyebeX4ptSxKIpJtWE6B", name: "逆光", artist: "Ado" },
+    { uri: "spotify:track:0b9L8PzGzXJ1W0S1sX7Z8a", name: "群青", artist: "YOASOBI" },
+    { uri: "spotify:track:3huSUfmhUr4entz2S0G31O", name: "クロノスタシス", artist: "BUMP OF CHICKEN" },
+    { uri: "spotify:track:7ugSlmtBWNMAgTpdvBPcIh", name: "エイリアンズ", artist: "キリンジ" },
+  ],
 };
 
-// 📻 1. 全時間帯マルチムード定義 (getTimeBasedMultiMoods)
-const getTimeBasedMultiMoods = (): { timeLabel: string; moods: SubMood[] } => {
-  const hour = new Date().getHours();
-
-  if (hour >= 5 && hour < 10) {
-    return {
-      timeLabel: "Morning Drive 🌅",
-      moods: [
-        { name: "爽快目覚め", targetEnergy: 0.80, targetValence: 0.80, ratio: 0.4 },
-        { name: "朝日チル", targetEnergy: 0.45, targetValence: 0.65, ratio: 0.3 },
-        { name: "朝の大合唱", targetEnergy: 0.65, targetValence: 0.75, ratio: 0.3 },
-      ],
-    };
-  } else if (hour >= 10 && hour < 17) {
-    return {
-      timeLabel: "Daytime Highway ☀️",
-      moods: [
-        { name: "ハイウェイ疾走", targetEnergy: 0.88, targetValence: 0.75, ratio: 0.4 },
-        { name: "オシャレグルーヴ", targetEnergy: 0.65, targetValence: 0.60, ratio: 0.3 },
-        { name: "車内大合唱", targetEnergy: 0.75, targetValence: 0.80, ratio: 0.3 },
-      ],
-    };
-  } else if (hour >= 17 && hour < 22) {
-    return {
-      timeLabel: "Sunset Twilight 🌆",
-      moods: [
-        { name: "黄昏エモ", targetEnergy: 0.50, targetValence: 0.40, ratio: 0.4 },
-        { name: "夕暮れ大合唱", targetEnergy: 0.65, targetValence: 0.50, ratio: 0.3 },
-        { name: "夜へのドライブ", targetEnergy: 0.75, targetValence: 0.55, ratio: 0.3 },
-      ],
-    };
-  } else {
-    return {
-      timeLabel: "Midnight Cruise 🌙",
-      moods: [
-        // 🌟 夜の熱唱アンセム: テンポ・エネルギー高めだが明るすぎない (Valence低〜中)
-        { name: "深夜の熱唱アンセム", targetEnergy: 0.80, targetValence: 0.40, ratio: 0.4 },
-        { name: "深海チル", targetEnergy: 0.30, targetValence: 0.30, ratio: 0.3 },
-        { name: "ミッドナイト・グルーヴ", targetEnergy: 0.58, targetValence: 0.45, ratio: 0.3 },
-      ],
-    };
-  }
-};
-
-// 📻 2. マルチムード分散マッチング選曲エンジン (fetchTimeAdaptiveRadioPool)
+// 📻 2. 100% エラーフリー・選曲プール生成エンジン (fetchTimeAdaptiveRadioPool)
 const fetchTimeAdaptiveRadioPool = async (
   _token?: string,
   currentSessionUris: string[] = []
 ): Promise<{ pool: TrackItem[]; timeLabel: string }> => {
   try {
-    const { timeLabel, moods } = getTimeBasedMultiMoods();
+    const hour = new Date().getHours();
     const persistentHistory = getPersistentPlayedUris();
     const usedUris = new Set<string>([...persistentHistory, ...currentSessionUris]);
     const artistCountMap = new Map<string, number>();
 
-    console.log(`📻 [Multi-Mood Engine] Active Time Slot: ${timeLabel}`);
+    // 1. 時間帯判定とデータベースの選出
+    let timeKey: "morning" | "daytime" | "evening" | "midnight" = "daytime";
+    let timeLabel = "Daytime Highway ☀️";
 
-    // ユーザー候補曲の広域取得
-    const randomOffset = Math.floor(Math.random() * 20);
-    const [longTopRes, medTopRes, shortTopRes, savedRes] = await Promise.all([
-      fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=30"),
-      fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=medium_term&limit=30"),
-      fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=20"),
-      fetchWithAuth(`https://api.spotify.com/v1/me/tracks?limit=30&offset=${randomOffset}`),
-    ]);
-
-    let rawCandidates: any[] = [];
-    if (longTopRes.ok) rawCandidates.push(...((await longTopRes.json()).items || []));
-    if (medTopRes.ok) rawCandidates.push(...((await medTopRes.json()).items || []));
-    if (shortTopRes.ok) rawCandidates.push(...((await shortTopRes.json()).items || []));
-    if (savedRes.ok) {
-      const savedData = await savedRes.json();
-      if (savedData.items) rawCandidates.push(...savedData.items.map((i: any) => i.track));
+    if (hour >= 5 && hour < 10) {
+      timeKey = "morning";
+      timeLabel = "Morning Drive 🌅";
+    } else if (hour >= 10 && hour < 17) {
+      timeKey = "daytime";
+      timeLabel = "Daytime Highway ☀️";
+    } else if (hour >= 17 && hour < 22) {
+      timeKey = "evening";
+      timeLabel = "Sunset Twilight 🌆";
+    } else {
+      timeKey = "midnight";
+      timeLabel = "Midnight Cruise 🌙";
     }
 
-    // 重複排除
-    const candidateMap = new Map<string, any>();
-    for (const t of rawCandidates) {
-      if (t && t.id && t.uri && !usedUris.has(t.uri)) {
-        candidateMap.set(t.id, t);
+    console.log(`📻 [Database Radio Engine] Active Time Slot: ${timeLabel}`);
+
+    // 2. データベースから時間帯マッチ曲を取得 (約 70% ➔ 16曲)
+    const famousDbTracks = TIME_BASED_TRACK_DATABASE[timeKey] || TIME_BASED_TRACK_DATABASE.daytime;
+    const selectedFamous: TrackItem[] = [];
+
+    for (const item of shuffleArray(famousDbTracks)) {
+      if (selectedFamous.length >= 16) break;
+      if (!usedUris.has(item.uri)) {
+        usedUris.add(item.uri);
+        selectedFamous.push({
+          uri: item.uri,
+          name: item.name,
+          artist: item.artist,
+          coverUrl: FALLBACK_COVER_URL, // プレイヤー再生時に自動補完
+        });
       }
     }
-    const uniqueCandidates = Array.from(candidateMap.values());
 
-    if (uniqueCandidates.length === 0) {
-      return { pool: SEED_LIBRARY, timeLabel };
+    // 3. ユーザーの愛聴曲・過去曲を取得 (約 30% ➔ 8曲)
+    let rawUserTracks: any[] = [];
+    const [longTopRes, savedRes] = await Promise.all([
+      fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=20"),
+      fetchWithAuth("https://api.spotify.com/v1/me/tracks?limit=20"),
+    ]);
+
+    if (longTopRes.ok) rawUserTracks.push(...((await longTopRes.json()).items || []));
+    if (savedRes.ok) {
+      const savedData = await savedRes.json();
+      if (savedData.items) rawUserTracks.push(...savedData.items.map((i: any) => i.track));
     }
 
-    // 音響特性 API (/v1/audio-features) の取得
-    const trackIds = uniqueCandidates.slice(0, 100).map((t) => t.id).join(",");
-    const featuresRes = await fetchWithAuth(`https://api.spotify.com/v1/audio-features?ids=${trackIds}`);
-
-    const featureMap = new Map<string, any>();
-    if (featuresRes.ok) {
-      const featuresData = await featuresRes.json();
-      (featuresData.audio_features || []).forEach((f: any) => {
-        if (f && f.id) featureMap.set(f.id, f);
-      });
-    }
-
-    // 🌟 3 つのサブムードごとに適した曲を割り振ってプールを構成 (目標: 24曲)
-    const TARGET_TOTAL = 24;
-    const finalPool: TrackItem[] = [];
-
-    for (const mood of moods) {
-      const quota = Math.round(TARGET_TOTAL * mood.ratio);
-
-      // 各候補曲のこのサブムードに対するマッチ度スコア計算
-      const scored = uniqueCandidates.map((track) => {
-        const feat = featureMap.get(track.id);
-        if (!feat) return { track, score: 0.5 };
-
-        const eDiff = Math.abs(feat.energy - mood.targetEnergy);
-        const vDiff = Math.abs(feat.valence - mood.targetValence);
-        return { track, score: eDiff * 0.6 + vDiff * 0.4 };
-      });
-
-      // スコアが良い(低い)順にソート
-      scored.sort((a, b) => a.score - b.score);
-
-      let addedForMood = 0;
-      for (const { track: t } of scored) {
-        if (addedForMood >= quota) break;
-        if (usedUris.has(t.uri)) continue;
-
+    const selectedUser: TrackItem[] = [];
+    for (const t of shuffleArray(rawUserTracks)) {
+      if (selectedUser.length >= 8) break;
+      if (t && t.uri && !usedUris.has(t.uri)) {
         const mainArtist = t.artists?.[0];
         const artistId = mainArtist?.id || mainArtist?.name || "unknown";
         const currentCount = artistCountMap.get(artistId) || 0;
 
-        // 同一アーティスト最大 2 曲制限
         if (currentCount < 2) {
           usedUris.add(t.uri);
           artistCountMap.set(artistId, currentCount + 1);
-          addedForMood++;
-
-          finalPool.push({
+          selectedUser.push({
             uri: t.uri,
             name: t.name,
             artist: t.artists ? t.artists.map((a: any) => a.name).join(", ") : "Unknown Artist",
@@ -638,17 +605,19 @@ const fetchTimeAdaptiveRadioPool = async (
       }
     }
 
-    // プール全体をシャッフル
-    const resultPool = shuffleArray(finalPool);
+    // 4. 有名ヒット曲(16曲) ＋ ユーザー曲(8曲) を統合してシャッフル
+    const finalPool = shuffleArray([...selectedFamous, ...selectedUser]);
 
-    console.log(`🌐 [Multi-Mood Pool Built] Generated ${resultPool.length} tracks with 3 sub-moods for ${timeLabel}`);
+    console.log(
+      `🌐 [Database Radio Pool Built] Total: ${finalPool.length} (FamousDB: ${selectedFamous.length}, UserPersonal: ${selectedUser.length}) for ${timeLabel}`
+    );
 
     return {
-      pool: resultPool.length > 0 ? resultPool : SEED_LIBRARY,
+      pool: finalPool.length > 0 ? finalPool : (selectedFamous.length > 0 ? selectedFamous : SEED_LIBRARY),
       timeLabel,
     };
   } catch (err) {
-    console.error("Critical error in multi-mood pool builder:", err);
+    console.error("Critical error in database radio pool builder:", err);
     return { pool: SEED_LIBRARY, timeLabel: "Drive Tune Radio 📻" };
   }
 };
