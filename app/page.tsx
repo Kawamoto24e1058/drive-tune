@@ -540,14 +540,21 @@ const fetchTimeAdaptiveRadioPool = async (
       console.error("Failed to fetch top artists:", e);
     }
 
-    // 🌟 1. サーバー API (/api/radio) に 3 レイヤー発見ロジックを委託
+    // 🌟 1. サーバー API (/api/radio) に 3 レイヤー & Gemini AI DJ 発見ロジックを委託
     let freshTracks: TrackItem[] = [];
     try {
-      const excludedParam = Array.from(usedUris).slice(0, 200).join(',');
-      const topArtistsParam = topArtistNames.slice(0, 5).join(',');
-      const apiRes = await fetch(
-        `/api/radio?t=${Date.now()}&hour=${hour}&userToken=${encodeURIComponent(userToken)}&excludedUris=${encodeURIComponent(excludedParam)}&topArtists=${encodeURIComponent(topArtistsParam)}`
-      );
+      const excludedUrisList = Array.from(usedUris).slice(0, 200);
+      const apiRes = await fetch('/api/radio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hour,
+          userToken,
+          excludedUris: excludedUrisList,
+          topArtists: topArtistNames.slice(0, 8),
+          excludeNames: typeof window !== 'undefined' ? (window as any)._lastPlayedSongLabels || [] : [],
+        }),
+      });
       if (apiRes.ok) {
         const data = await apiRes.json();
         if (data.tracks && Array.isArray(data.tracks)) {
@@ -618,6 +625,44 @@ const fetchTimeAdaptiveRadioPool = async (
     console.error("Critical error in radio pool builder:", err);
     return { pool: SEED_LIBRARY, timeLabel: "Drive Tune Radio 📻" };
   }
+};
+
+// AI選曲エンジン API (/api/radio) から選曲プールを取得する関数
+const fetchAiRadioPool = async (customExcludeNames: string[] = []): Promise<{ pool: TrackItem[]; timeLabel: string }> => {
+  try {
+    const hour = new Date().getHours();
+    console.log(`📻 [AI Engine Call] Requesting AI playlist for hour: ${hour}...`);
+
+    const res = await fetch('/api/radio', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        hour,
+        excludeNames: customExcludeNames,
+      }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      const tracks: TrackItem[] = (data.tracks || []).map((t: any) => ({
+        uri: t.uri,
+        name: t.name,
+        artist: t.artist,
+        coverUrl: t.coverUrl || FALLBACK_COVER_URL,
+      }));
+
+      console.log(`🌐 [AI Pool Built] Received ${tracks.length} AI recommended tracks.`);
+
+      return {
+        pool: tracks.length > 0 ? tracks : SEED_LIBRARY,
+        timeLabel: "Drive Tune AI Radio 📻",
+      };
+    }
+  } catch (err) {
+    console.error("Critical error in AI radio pool builder:", err);
+  }
+
+  return { pool: SEED_LIBRARY, timeLabel: "Drive Tune AI Radio 📻" };
 };
 
 const fetchFailSafeRadioPool = fetchTimeAdaptiveRadioPool;
@@ -746,10 +791,25 @@ export default function RadioPlayer() {
   const [historyArtists, setHistoryArtists] = useState<string[]>([]);
   const [playedUris, setPlayedUris] = useState<string[]>([]);
   const [upcomingUris, setUpcomingUris] = useState<string[]>([]);
+  // 過去に再生・スキップされた "曲名 - アーティスト名" の履歴配列を保持する state
+  const [playedSongLabels, setPlayedSongLabels] = useState<string[]>([]);
   // セッション内既聴 URI セット (プール補填除外用)
   const [sessionPlayedUris, setSessionPlayedUris] = useState<Set<string>>(new Set());
   // プール自動補填中フラグ
   const [isRefilling, setIsRefilling] = useState(false);
+
+  // 曲が再生・スキップされた際の履歴追加関数
+  const recordPlayedSongLabel = (name: string, artist: string) => {
+    if (!name) return;
+    const label = `${name} - ${artist}`;
+    setPlayedSongLabels((prev) => {
+      const next = Array.from(new Set([...prev, label]));
+      if (typeof window !== "undefined") {
+        (window as any)._lastPlayedSongLabels = next;
+      }
+      return next;
+    });
+  };
 
   // 🎵 1. 再生済み履歴管理の強化 (Set & Ref の導入)
   const queuedUrisSetRef = useRef<Set<string>>(new Set()); // Spotify キューに追加済みのURI
@@ -808,13 +868,20 @@ export default function RadioPlayer() {
         ...Array.from(currentSessionPlayed),
       ]);
 
-      // ユーザートークンと既聴 URI を API に渡す (サーバー側で除外処理)
+      // ユーザートークンと既聴 URI を API に渡す (サーバー側で除外処理) - POSTで送信
       const userToken = getStoredAccessToken() || token || '';
-      const excludedParam = Array.from(allPlayedUris).slice(0, 200).join(',');
+      const excludedUrisList = Array.from(allPlayedUris).slice(0, 200);
       const hour = new Date().getHours();
-      const res = await fetch(
-        `/api/radio?t=${Date.now()}&hour=${hour}&userToken=${encodeURIComponent(userToken)}&excludedUris=${encodeURIComponent(excludedParam)}`
-      );
+      const res = await fetch('/api/radio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hour,
+          userToken,
+          excludedUris: excludedUrisList,
+          excludeNames: playedSongLabels,
+        }),
+      });
       if (res.ok) {
         const data = await res.json();
         const rawTracks: TrackItem[] = (data.tracks || []).map((t: any) => ({
@@ -885,14 +952,21 @@ export default function RadioPlayer() {
       if (currentUpcomingUris.length < 5) {
         console.log(`📻 [Dynamic Shuffle] Upcoming queue low (${currentUpcomingUris.length}). Fetching fresh tracks...`);
 
-        // /api/radio からフレッシュな曲を取得（ユーザートークン付き）
+        // /api/radio からフレッシュな曲を取得（ユーザートークン付き、POST使用）
         const userToken = savedToken;
-        const excludedParam = Array.from(allPlayedUris).slice(0, 200).join(',');
+        const excludedUrisList = Array.from(allPlayedUris).slice(0, 200);
         const hour = new Date().getHours();
         try {
-          const apiRes = await fetch(
-            `/api/radio?t=${Date.now()}&hour=${hour}&userToken=${encodeURIComponent(userToken)}&excludedUris=${encodeURIComponent(excludedParam)}`
-          );
+          const apiRes = await fetch('/api/radio', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              hour,
+              userToken,
+              excludedUris: excludedUrisList,
+              excludeNames: playedSongLabels,
+            }),
+          });
           if (apiRes.ok) {
             const data = await apiRes.json();
             const freshUris = (data.tracks || [])
@@ -1155,6 +1229,9 @@ export default function RadioPlayer() {
     if (nowPlaying?.uri) {
       console.log(`⏭️ [Skip] Marking as played: ${nowPlaying.title}`);
       markTrackAsPlayed(nowPlaying.uri);
+      if (nowPlaying.title && nowPlaying.artist) {
+        recordPlayedSongLabel(nowPlaying.title, nowPlaying.artist);
+      }
     }
 
     try {
@@ -1170,6 +1247,8 @@ export default function RadioPlayer() {
   };
 
   const handleManualSkip = handleSkip;
+  const handleSkipToNext = handleSkip;
+  const playNextInQueue = handleSkip;
 
   // 🌟 曲が新しく再生開始されたタイミングで常にキュー補充チェック ＆ 日またぎ履歴保存
   useEffect(() => {
@@ -1178,6 +1257,9 @@ export default function RadioPlayer() {
       if (nowPlaying.uri) {
         // 即時既聴マーク & プール除外
         markTrackAsPlayed(nowPlaying.uri);
+      }
+      if (nowPlaying.title && nowPlaying.artist) {
+        recordPlayedSongLabel(nowPlaying.title, nowPlaying.artist);
       }
       console.log(`🎵 [Track Changed] Now playing: ${nowPlaying.title}. Maintaining queue...`);
       maintainRadioQueue(effectiveDeviceId);
