@@ -784,6 +784,16 @@ export default function RadioPlayer() {
     }
   };
 
+// 曲名＋アーティスト名の正規化キーを作成するヘルパー
+const normalizeSongKey = (title: string, artist: string) => {
+  const cleanTitle = (title || '')
+    .toLowerCase()
+    .replace(/\s*[\(\-\~].*$/g, '')
+    .replace(/[^\w\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/g, '');
+  const cleanArtist = (artist || '').toLowerCase().replace(/[^\w\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/g, '');
+  return `${cleanTitle}|${cleanArtist}`;
+};
+
   // Personalized Hybrid Track Pool & Cooldown History
   const [trackPool, setTrackPool] = useState<TrackItem[]>(SEED_LIBRARY);
   const [activeTimeLabel, setActiveTimeLabel] = useState<string>("Radio Stream 📻");
@@ -793,10 +803,27 @@ export default function RadioPlayer() {
   const [upcomingUris, setUpcomingUris] = useState<string[]>([]);
   // 過去に再生・スキップされた "曲名 - アーティスト名" の履歴配列を保持する state
   const [playedSongLabels, setPlayedSongLabels] = useState<string[]>([]);
+  // 既聴曲キーの保持 State
+  const [playedKeys, setPlayedKeys] = useState<Set<string>>(new Set());
   // セッション内既聴 URI セット (プール補填除外用)
   const [sessionPlayedUris, setSessionPlayedUris] = useState<Set<string>>(new Set());
   // プール自動補填中フラグ
   const [isRefilling, setIsRefilling] = useState(false);
+
+  // トラック再生/スキップ時の既聴登録
+  const recordPlayedTrack = (name: string, artist: string) => {
+    if (!name) return;
+    const key = normalizeSongKey(name, artist);
+    setPlayedKeys((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      if (typeof window !== "undefined") {
+        (window as any)._lastPlayedKeys = Array.from(next);
+      }
+      return next;
+    });
+    recordPlayedSongLabel(name, artist);
+  };
 
   // 曲が再生・スキップされた際の履歴追加関数
   const recordPlayedSongLabel = (name: string, artist: string) => {
@@ -809,6 +836,30 @@ export default function RadioPlayer() {
       }
       return next;
     });
+  };
+
+  // 再生キュー補充関数
+  const refillHybridRadioPool = async () => {
+    const hour = new Date().getHours();
+
+    try {
+      const res = await fetch('/api/radio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hour,
+          excludeKeys: Array.from(playedKeys),
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        return data.tracks || [];
+      }
+    } catch (e) {
+      console.error("Refill failed:", e);
+    }
+    return [];
   };
 
   // 🎵 1. 再生済み履歴管理の強化 (Set & Ref の導入)
@@ -880,6 +931,7 @@ export default function RadioPlayer() {
           userToken,
           excludedUris: excludedUrisList,
           excludeNames: playedSongLabels,
+          excludeKeys: typeof window !== "undefined" ? (window as any)._lastPlayedKeys || Array.from(playedKeys) : Array.from(playedKeys),
         }),
       });
       if (res.ok) {
@@ -965,6 +1017,7 @@ export default function RadioPlayer() {
               userToken,
               excludedUris: excludedUrisList,
               excludeNames: playedSongLabels,
+              excludeKeys: typeof window !== "undefined" ? (window as any)._lastPlayedKeys || Array.from(playedKeys) : Array.from(playedKeys),
             }),
           });
           if (apiRes.ok) {
@@ -1230,7 +1283,7 @@ export default function RadioPlayer() {
       console.log(`⏭️ [Skip] Marking as played: ${nowPlaying.title}`);
       markTrackAsPlayed(nowPlaying.uri);
       if (nowPlaying.title && nowPlaying.artist) {
-        recordPlayedSongLabel(nowPlaying.title, nowPlaying.artist);
+        recordPlayedTrack(nowPlaying.title, nowPlaying.artist);
       }
     }
 
@@ -1259,7 +1312,7 @@ export default function RadioPlayer() {
         markTrackAsPlayed(nowPlaying.uri);
       }
       if (nowPlaying.title && nowPlaying.artist) {
-        recordPlayedSongLabel(nowPlaying.title, nowPlaying.artist);
+        recordPlayedTrack(nowPlaying.title, nowPlaying.artist);
       }
       console.log(`🎵 [Track Changed] Now playing: ${nowPlaying.title}. Maintaining queue...`);
       maintainRadioQueue(effectiveDeviceId);

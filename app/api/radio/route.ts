@@ -1,212 +1,219 @@
 import { NextResponse } from 'next/server';
 
-// 毎回ランダムに付与する「選曲の切り口（サブテーマ）」
-const RANDOM_SUB_FLAVORS = [
-  "2000年代〜2010年代の平成懐かし名曲・大ヒット曲を中心に",
-  "フェスやライブで激熱になるドライブ邦ロック・バンド中心に",
-  "TikTokやSNSで話題になった令和の最新トレンド＆バズソングを中心に",
-  "90年代〜2000年代のアニメ主題歌・アニソン名曲を隠し味に",
-  "ドライブにぴったりの80年代〜90年代シティポップ・名曲を中心に",
-  "ボーカルの歌唱力が際立つ車内大合唱アンセムを中心に",
-  "エモくてメロウなアコースティック＆インディーズポップを中心に"
-];
+// 曲名とアーティスト名を正規化して重複判定キーを作成 (例: "specialz|king gnu")
+function normalizeKey(title: string, artist: string): string {
+  const cleanTitle = (title || '')
+    .toLowerCase()
+    .replace(/\s*[\(\-\~].*$/g, '') // (movie ver.) や - Remix 等を除去
+    .replace(/[^\w\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/g, ''); // 記号除去
+  const cleanArtist = (artist || '').toLowerCase().replace(/[^\w\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/g, '');
+  return `${cleanTitle}|${cleanArtist}`;
+}
 
-// 1. Spotify サーバー間認証 (Client Credentials)
-async function getSpotifyToken() {
+async function getSpotifyToken(): Promise<string | null> {
   const clientId = process.env.SPOTIFY_CLIENT_ID || process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || '387ae192a82d41e4abb7acf114110694';
   const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
 
-  if (!clientId) {
-    throw new Error('SPOTIFY_CLIENT_ID is missing in environment variables.');
-  }
-
-  // Client secretがない場合はトークンなしとして扱うか、Client Credentialsのリクエストを送る
-  if (!clientSecret) {
-    console.warn('⚠️ SPOTIFY_CLIENT_SECRET is not set. Client Credentials search might be limited.');
+  if (!clientId || !clientSecret) {
+    console.warn('⚠️ SPOTIFY_CLIENT_SECRET is missing. Proceeding without client credentials.');
     return null;
   }
 
-  const res = await fetch('https://accounts.spotify.com/api/token', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
-    },
-    body: 'grant_type=client_credentials',
-    cache: 'no-store',
-  });
-
-  if (!res.ok) throw new Error('Failed to fetch Spotify client credentials token');
-  const data = await res.json();
-  return data.access_token;
-}
-
-// 2. Gemini API による AI プロDJ選曲
-async function getAiSongRecommendations(hour: number, excludeListStr: string) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    console.warn("⚠️ GEMINI_API_KEY is missing in environment variables.");
-    return null;
-  }
-
-  // 時間帯コンテキスト
-  let timeContext = "";
-  if (hour >= 5 && hour < 10) timeContext = "朝のドライブ。爽やかで目覚めるようなJ-POPヒット、朝日を浴びながら聴きたい名曲。";
-  else if (hour >= 10 && hour < 17) timeContext = "昼のハイウェイドライブ。テンポが良くドライブ感あふれる定番ヒット曲、平成・令和のフェス名曲。";
-  else if (hour >= 17 && hour < 22) timeContext = "夕方〜夜のドライブ。エモいメロディ、夕暮れに浸れるJ-POP名曲、少し大人っぽいシティポップ。";
-  else timeContext = "深夜のドライブ。車内で熱唱できるハイテンポでエモい邦ロック/アニソン (40%) + しっとりチルな夜曲 (30%) + オシャレなR&B/シティポップ (30%)。";
-
-  // 毎回違うサブテーマをランダム選出
-  const randomFlavor = RANDOM_SUB_FLAVORS[Math.floor(Math.random() * RANDOM_SUB_FLAVORS.length)];
-
-  const prompt = `あなたはプロのラジオDJです。日本のドライブ中に聴く最高の音楽を選曲してください。
-
-【基本状況】
-現在時刻: ${hour}時 (${timeContext})
-今回のスペシャルテーマ: 【${randomFlavor}】
-
-【選曲厳格ルール】
-1. 誰もが知っている有名曲・ヒット曲（J-POP, 邦ロック, 年代ヒット, アニソン）から選曲してください。
-2. 同一アーティストは1曲までにしてください。
-3. 以下の「過去に再生された曲・アーティストのリスト」に含まれる曲は【絶対に追加しないでください】:
-   [${excludeListStr}]
-
-【出力フォーマット】
-以下の純粋な JSON 配列のみを出力してください（Markdownの装飾やコードブロックは一切不要です）:
-[
-  { "song": "曲名", "artist": "アーティスト名" }
-]
-提案曲数: 15曲`;
-
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: "application/json",
-        temperature: 0.95 // 被りを防ぐためランダム度を極限まで引き上げる
-      }
-    })
-  });
-
-  if (!res.ok) throw new Error(`Gemini API Failed with status: ${res.status}`);
-
-  const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
   try {
-    return JSON.parse(text);
+    const res = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
+      },
+      body: 'grant_type=client_credentials',
+      cache: 'no-store',
+    });
+
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.access_token || null;
   } catch (e) {
-    // Markdownコードブロックが含まれている場合のクリーニング
-    const cleanedText = text.replace(/```json/g, '').replace(/```/g, '').trim();
-    return JSON.parse(cleanedText);
+    console.error('Failed to fetch Spotify token:', e);
+    return null;
   }
 }
 
-// フォールバック選曲リスト (Gemini APIキーがない場合またはエラー時)
-const FALLBACK_AI_RECOMMENDATIONS = [
-  { song: '怪獣の花唄', artist: 'Vaundy' },
-  { song: 'ミックスナッツ', artist: 'Official髭男dism' },
-  { song: '新宝島', artist: 'サカナクション' },
-  { song: 'ハルジオン', artist: 'YOASOBI' },
-  { song: '感電', artist: '米津玄師' },
-  { song: 'マリーゴールド', artist: 'あいみょん' },
-  { song: '丸ノ内サディスティック', artist: '椎名林檎' },
-  { song: 'SPECIALZ', artist: 'King Gnu' },
-  { song: 'KICK BACK', artist: '米津玄師' },
-  { song: '新時代', artist: 'Ado' },
-  { song: '高嶺の花子さん', artist: 'back number' },
-  { song: '青と夏', artist: 'Mrs. GREEN APPLE' },
-  { song: '天体観測', artist: 'BUMP OF CHICKEN' },
-  { song: '前前前世', artist: 'RADWIMPS' },
-  { song: 'きらり', artist: '藤井 風' },
+// A. AI による時間帯適応選曲 (40%)
+async function fetchAiTimeSlotTracks(hour: number, excludeKeys: Set<string>, spotifyToken: string | null) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || !spotifyToken) return [];
+
+  let timeContext = hour >= 5 && hour < 10 ? "朝のドライブ。爽やかで目覚めるJ-POP" :
+                    hour >= 10 && hour < 17 ? "昼のハイウェイ。爽快な邦ロック＆ポップス" :
+                    hour >= 17 && hour < 22 ? "夕暮れのドライブ。エモいメロディ＆シティポップ" : "深夜のドライブ。熱唱アンセム＆ミッドナイトチル";
+
+  const prompt = `プロラジオDJとして、${hour}時(${timeContext})の日本のドライブに合う名曲を10曲選曲してください。
+JSON配列形式のみで出力: [{"song": "曲名", "artist": "アーティスト名"}]`;
+
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: "application/json", temperature: 0.95 }
+      })
+    });
+
+    if (!res.ok) return [];
+    const data = await res.json();
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
+    const cleanedText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+    const items = JSON.parse(cleanedText);
+
+    const tracks: any[] = [];
+    for (const item of items) {
+      if (!item || !item.song || !item.artist) continue;
+      const key = normalizeKey(item.song, item.artist);
+      if (excludeKeys.has(key)) continue;
+
+      let q = `track:"${item.song}" artist:"${item.artist}"`;
+      let searchRes = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(q)}&type=track&market=JP&limit=1`, {
+        headers: { Authorization: `Bearer ${spotifyToken}` }
+      });
+
+      let t: any = null;
+      if (searchRes.ok) {
+        const sData = await searchRes.json();
+        t = sData.tracks?.items?.[0];
+      }
+
+      if (!t) {
+        q = `${item.song} ${item.artist}`;
+        searchRes = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(q)}&type=track&market=JP&limit=1`, {
+          headers: { Authorization: `Bearer ${spotifyToken}` }
+        });
+        if (searchRes.ok) {
+          const sData = await searchRes.json();
+          t = sData.tracks?.items?.[0];
+        }
+      }
+
+      if (t && t.uri) {
+        excludeKeys.add(key);
+        tracks.push({
+          uri: t.uri,
+          name: t.name,
+          artist: t.artists.map((a: any) => a.name).join(', '),
+          coverUrl: t.album?.images?.[0]?.url || ''
+        });
+      }
+    }
+    return tracks;
+  } catch (e) {
+    console.error('fetchAiTimeSlotTracks error:', e);
+    return [];
+  }
+}
+
+// B. 年代・ジャンル ディスカバリー検索 (30%)
+async function fetchDiscoveryTracks(excludeKeys: Set<string>, spotifyToken: string | null) {
+  if (!spotifyToken) return [];
+
+  const queries = ['J-POP 2010年代', '平成 アニメ 主題歌', 'ドライブ 邦楽 定番', '80年代 シティポップ', 'J-ROCK 名曲'];
+  const query = queries[Math.floor(Math.random() * queries.length)];
+  const offset = Math.floor(Math.random() * 40);
+
+  try {
+    const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track&market=JP&limit=15&offset=${offset}`, {
+      headers: { Authorization: `Bearer ${spotifyToken}` }
+    });
+
+    const tracks: any[] = [];
+    if (res.ok) {
+      const data = await res.json();
+      for (const t of data.tracks?.items || []) {
+        if (!t || !t.uri) continue;
+        const key = normalizeKey(t.name, t.artists?.[0]?.name || '');
+        if (!excludeKeys.has(key) && (t.popularity ?? 0) > 40) {
+          excludeKeys.add(key);
+          tracks.push({
+            uri: t.uri,
+            name: t.name,
+            artist: t.artists.map((a: any) => a.name).join(', '),
+            coverUrl: t.album?.images?.[0]?.url || ''
+          });
+        }
+      }
+    }
+    return tracks;
+  } catch (e) {
+    console.error('fetchDiscoveryTracks error:', e);
+    return [];
+  }
+}
+
+// フォールバック用の人気トラックデータベース
+const FALLBACK_HYBRID_TRACKS = [
+  { uri: 'spotify:track:6EzZn96uOc9JsVGNRpx06n', name: '怪獣の花唄', artist: 'Vaundy', coverUrl: '' },
+  { uri: 'spotify:track:7y6HOcbQ80bsOsq1GahaVP', name: 'ミックスナッツ', artist: 'Official髭男dism', coverUrl: '' },
+  { uri: 'spotify:track:0VjIjW4GlUZAMYd2vXMi3b', name: '新宝島', artist: 'サカナクション', coverUrl: '' },
+  { uri: 'spotify:track:37IPQgBkvbmH9JR5mlY6a8', name: 'ハルジオン', artist: 'YOASOBI', coverUrl: '' },
+  { uri: 'spotify:track:4saklk6nie3yiGePpBwUoc', name: '感電', artist: '米津玄師', coverUrl: '' },
+  { uri: 'spotify:track:2Gmyw5Vg2X5YW2lM3OC7nD', name: 'マリーゴールド', artist: 'あいみょん', coverUrl: '' },
+  { uri: 'spotify:track:7pk2Mx1LnlaEpxfzNhgRuz', name: '丸ノ内サディスティック', artist: '椎名林檎', coverUrl: '' },
+  { uri: 'spotify:track:6JmTrd6VvMOWZFBk439e28', name: 'SPECIALZ', artist: 'King Gnu', coverUrl: '' },
+  { uri: 'spotify:track:7jgqNMnqAT9FghC1uSYTFF', name: 'KICK BACK', artist: '米津玄師', coverUrl: '' },
+  { uri: 'spotify:track:4cPwi7lcWxRQNEb4xC77fC', name: '新時代', artist: 'Ado', coverUrl: '' },
+  { uri: 'spotify:track:18nkY3pJTub8WwEGiQAGh4', name: '高嶺の花子さん', artist: 'back number', coverUrl: '' },
+  { uri: 'spotify:track:364w0q0J0G13g7R7Y8x6Wb', name: '青と夏', artist: 'Mrs. GREEN APPLE', coverUrl: '' },
+  { uri: 'spotify:track:2ntXQnx4ZUraj1u5Hwqjem', name: '天体観測', artist: 'BUMP OF CHICKEN', coverUrl: '' },
+  { uri: 'spotify:track:3XNnq2oo1zmHDseKZKaYEF', name: '前前前世', artist: 'RADWIMPS', coverUrl: '' },
+  { uri: 'spotify:track:5oG8Ewk6dqsroYdmNFO7nu', name: 'きらり', artist: '藤井 風', coverUrl: '' },
 ];
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const excludeNames: string[] = body.excludeNames || []; // "曲名 - アーティスト名" の配列
+    const excludeList: string[] = body.excludeKeys || body.excludeNames || []; // "song|artist" または "song - artist" の配列
     const hour = parseInt(body.hour || new Date().getHours().toString(), 10);
     const userToken: string | null = body.userToken || null;
 
-    const excludeStr = excludeNames.slice(-60).join(', ');
+    const excludeKeysSet = new Set<string>();
+    excludeList.forEach((k) => {
+      if (typeof k === 'string') {
+        const parts = k.includes('|') ? k.split('|') : k.split(' - ');
+        if (parts.length >= 2) {
+          excludeKeysSet.add(normalizeKey(parts[0], parts[1]));
+        } else {
+          excludeKeysSet.add(k.toLowerCase().trim());
+        }
+      }
+    });
 
-    console.log(`🤖 [AI Radio DJ] Generating AI playlist for ${hour}:00 with flavor...`);
-    let aiRecommendations: any[] | null = null;
-    try {
-      aiRecommendations = await getAiSongRecommendations(hour, excludeStr);
-    } catch (e) {
-      console.error('Failed to get AI song recommendations:', e);
-    }
-
-    if (!aiRecommendations || !Array.isArray(aiRecommendations) || aiRecommendations.length === 0) {
-      console.warn('⚠️ Using fallback AI recommendations list.');
-      aiRecommendations = FALLBACK_AI_RECOMMENDATIONS;
-    }
-
-    // Spotify トークンの準備: ユーザートークンまたは Client Credentials
-    let spotifyToken: string | null = userToken;
+    let spotifyToken = userToken;
     if (!spotifyToken) {
-      try {
-        spotifyToken = await getSpotifyToken();
-      } catch (e) {
-        console.warn('Spotify Client Credentials token error:', e);
-      }
+      spotifyToken = await getSpotifyToken();
     }
 
-    const resultTracks: any[] = [];
+    // 並列で AI選曲(40%) と ディスカバリー(30%) を取得
+    const [aiTracks, discoveryTracks] = await Promise.all([
+      fetchAiTimeSlotTracks(hour, excludeKeysSet, spotifyToken),
+      fetchDiscoveryTracks(excludeKeysSet, spotifyToken)
+    ]);
 
-    // AI提案曲を Spotify API で検索して Spotify URI を回収
-    if (spotifyToken) {
-      for (const rec of aiRecommendations) {
-        if (!rec || !rec.song || !rec.artist) continue;
+    // 合体してバランスよくシャッフル
+    let combined = [...aiTracks, ...discoveryTracks.slice(0, 6)].sort(() => Math.random() - 0.5);
 
-        // 除外チェック
-        const recLabel = `${rec.song} - ${rec.artist}`;
-        if (excludeNames.includes(recLabel)) continue;
-
-        // 1. ピンポイント検索: `track:"曲名" artist:"アーティスト名"`
-        let q = `track:"${rec.song}" artist:"${rec.artist}"`;
-        let searchRes = await fetch(
-          `https://api.spotify.com/v1/search?q=${encodeURIComponent(q)}&type=track&market=JP&limit=1`,
-          { headers: { Authorization: `Bearer ${spotifyToken}` } }
-        );
-
-        let item: any = null;
-        if (searchRes.ok) {
-          const data = await searchRes.json();
-          item = data.tracks?.items?.[0];
-        }
-
-        // 2. ピンポイントでダメな場合はプレーンテキスト検索: `${rec.song} ${rec.artist}`
-        if (!item) {
-          q = `${rec.song} ${rec.artist}`;
-          searchRes = await fetch(
-            `https://api.spotify.com/v1/search?q=${encodeURIComponent(q)}&type=track&market=JP&limit=1`,
-            { headers: { Authorization: `Bearer ${spotifyToken}` } }
-          );
-          if (searchRes.ok) {
-            const data = await searchRes.json();
-            item = data.tracks?.items?.[0];
-          }
-        }
-
-        if (item) {
-          resultTracks.push({
-            uri: item.uri,
-            name: item.name,
-            artist: item.artists.map((a: any) => a.name).join(', '),
-            coverUrl: item.album?.images?.[0]?.url || '',
-          });
-        }
-      }
+    if (combined.length < 5) {
+      const fallbackFiltered = FALLBACK_HYBRID_TRACKS.filter((t) => {
+        const key = normalizeKey(t.name, t.artist);
+        return !excludeKeysSet.has(key);
+      });
+      combined = [...combined, ...fallbackFiltered].sort(() => Math.random() - 0.5);
     }
 
-    console.log(`✨ [AI Radio DJ] Mined ${resultTracks.length} tracks successfully.`);
+    console.log(`📻 [/api/radio] Built hybrid pool: ${combined.length} tracks (AI: ${aiTracks.length}, Discovery: ${discoveryTracks.length})`);
 
-    return NextResponse.json({ tracks: resultTracks });
+    return NextResponse.json({ tracks: combined });
   } catch (error: any) {
-    console.error('AI Radio Engine Error:', error);
+    console.error('Hybrid Radio API Error:', error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -216,10 +223,9 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const hour = parseInt(searchParams.get('hour') || new Date().getHours().toString(), 10);
     
-    // GETハンドラもPOST同様に動作させる
     const dummyReq = new Request(request.url, {
       method: 'POST',
-      body: JSON.stringify({ hour, excludeNames: [] }),
+      body: JSON.stringify({ hour, excludeKeys: [] }),
     });
     return await POST(dummyReq);
   } catch (error: any) {
