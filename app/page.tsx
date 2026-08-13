@@ -663,30 +663,60 @@ export default function RadioPlayer() {
     }
   };
 
-  // 2. スキップ時の確実な再生 ＆ リピート回避 (startPlaybackWithTrack)
-  const startPlaybackWithTrack = async (trackUri: string, targetDeviceId: string) => {
+  // 再生指示ハンドラ (デバイス転送 ＆ 403 エラー対策付き)
+  const playTrackOnDevice = async (trackUri: string, targetDeviceId: string) => {
+    if (!targetDeviceId || !trackUri) return;
+
     try {
       const savedToken = getStoredAccessToken() || token || "";
       await disableSpotifyRepeat(savedToken, targetDeviceId);
 
-      const res = await fetchWithAuth(`https://api.spotify.com/v1/me/player/play?device_id=${targetDeviceId}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ uris: [trackUri] }),
-      });
+      // 1. まず該当デバイスに再生フォーカスを転送してアクティブ化
+      try {
+        await fetchWithAuth("https://api.spotify.com/v1/me/player", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            device_ids: [targetDeviceId],
+            play: false,
+          }),
+        });
+      } catch (e) {
+        console.warn("Device transfer warning:", e);
+      }
+
+      // 2. 指定トラックの再生リクエストを実行
+      const res = await fetchWithAuth(
+        `https://api.spotify.com/v1/me/player/play?device_id=${targetDeviceId}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            uris: [trackUri],
+          }),
+        }
+      );
 
       if (!res.ok) {
-        console.warn("Playback request failed, attempting SDK resume fallback...");
+        if (res.status === 403) {
+          console.error(
+            "❌ [Playback 403 Forbidden] Spotify Premium アカウントであるか、OAuth スコープ (user-modify-playback-state) を確認してください。"
+          );
+        } else {
+          console.warn(`Playback failed with status: ${res.status}`);
+        }
         if (playerRef.current && typeof playerRef.current.resume === "function") {
           await playerRef.current.resume();
         }
+      } else {
+        console.log(`🟢 [Playback Started] Successfully playing: ${trackUri}`);
       }
     } catch (err) {
-      console.error("Failed to start playback:", err);
+      console.error("Failed to trigger play request:", err);
     }
   };
+
+  const startPlaybackWithTrack = playTrackOnDevice;
 
 // 曲名＋アーティスト名の正規化キーを作成するヘルパー
 const normalizeSongKey = (title: string, artist: string) => {
@@ -1117,13 +1147,14 @@ const normalizeSongKey = (title: string, artist: string) => {
     window.localStorage.setItem("spotify_redirect_uri", redirectUri);
 
     const scopeList = [
+      "user-read-playback-state",
+      "user-modify-playback-state",
+      "user-read-currently-playing",
       "streaming",
       "user-read-email",
       "user-read-private",
-      "user-modify-playback-state",
-      "user-read-playback-state",
-      "user-library-read",
       "user-top-read",
+      "user-library-read",
     ];
 
     const scopeParam = scopeList.join(" ");
