@@ -513,11 +513,25 @@ const fetchTimeAdaptiveRadioPool = async (
   try {
     const persistentHistory = getPersistentPlayedUris();
     const usedUris = new Set<string>([...persistentHistory, ...currentSessionUris]);
+    const hour = new Date().getHours();
 
-    // 🌟 1. サーバー API (/api/radio) から世間のヒット曲・年代名曲を 18 曲取得
+    let timeLabel = "Drive Tune Radio 📻";
+    if (hour >= 5 && hour < 10) timeLabel = "Morning Drive 🌅";
+    else if (hour >= 10 && hour < 17) timeLabel = "Daytime Highway ☀️";
+    else if (hour >= 17 && hour < 22) timeLabel = "Sunset Twilight 🌆";
+    else timeLabel = "Midnight Cruise 🌙";
+
+    // 🌟 1. サーバー API (/api/radio) から時間帯マッチのヒット曲・年代名曲を取得
+    // ユーザートークン＋既聴 URI をサーバーに渡してサーバー側でも重複除外
     let freshChartTracks: TrackItem[] = [];
     try {
-      const apiRes = await fetch(`/api/radio?t=${Date.now()}`);
+      const userToken = typeof window !== 'undefined'
+        ? (localStorage.getItem('drivetune_access_token') || localStorage.getItem('spotify_access_token') || '')
+        : '';
+      const excludedParam = Array.from(usedUris).slice(0, 200).join(',');
+      const apiRes = await fetch(
+        `/api/radio?t=${Date.now()}&hour=${hour}&userToken=${encodeURIComponent(userToken)}&excludedUris=${encodeURIComponent(excludedParam)}`
+      );
       if (apiRes.ok) {
         const data = await apiRes.json();
         if (data.tracks && Array.isArray(data.tracks)) {
@@ -535,7 +549,7 @@ const fetchTimeAdaptiveRadioPool = async (
       console.error("Failed to fetch fresh tracks from API:", e);
     }
 
-    // 🌟 2. 自分の過去履歴からは「最大 2曲」のみ抽出
+    // 🌟 2. 自分の過去履歴からは「最大 2曲」のみ抽出（アクセント）
     let rawUserTracks: any[] = [];
     const userRes = await fetchWithAuth(
       "https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=10"
@@ -559,16 +573,16 @@ const fetchTimeAdaptiveRadioPool = async (
       }
     }
 
-    // 3. ヒット曲(18曲) ＋ 自分の曲(2曲) を合体してシャッフル
+    // 3. ヒット曲(最大18曲) ＋ 自分の曲(最大2曲) を合体してシャッフル
     const finalPool = shuffleArray([...freshChartTracks, ...userPersonalTracks]);
 
     console.log(
-      `🌐 [Server-Mined Radio Pool] Total: ${finalPool.length} (FreshChartHits: ${freshChartTracks.length}, UserPersonal: ${userPersonalTracks.length})`
+      `🌐 [Server-Mined Radio Pool] Total: ${finalPool.length} (FreshChartHits: ${freshChartTracks.length}, UserPersonal: ${userPersonalTracks.length}) - ${timeLabel}`
     );
 
     return {
       pool: finalPool.length > 0 ? finalPool : SEED_LIBRARY,
-      timeLabel: "Drive Tune Radio 📻",
+      timeLabel,
     };
   } catch (err) {
     console.error("Critical error in radio pool builder:", err);
@@ -764,7 +778,13 @@ export default function RadioPlayer() {
         ...Array.from(currentSessionPlayed),
       ]);
 
-      const res = await fetch(`/api/radio?t=${Date.now()}`);
+      // ユーザートークンと既聴 URI を API に渡す (サーバー側で除外処理)
+      const userToken = getStoredAccessToken() || token || '';
+      const excludedParam = Array.from(allPlayedUris).slice(0, 200).join(',');
+      const hour = new Date().getHours();
+      const res = await fetch(
+        `/api/radio?t=${Date.now()}&hour=${hour}&userToken=${encodeURIComponent(userToken)}&excludedUris=${encodeURIComponent(excludedParam)}`
+      );
       if (res.ok) {
         const data = await res.json();
         const rawTracks: TrackItem[] = (data.tracks || []).map((t: any) => ({
@@ -774,6 +794,7 @@ export default function RadioPlayer() {
           coverUrl: t.coverUrl || FALLBACK_COVER_URL,
         }));
 
+        // クライアント側でも履歴チェック (二重保護)
         const freshTracks = rawTracks.filter((t) => !allPlayedUris.has(t.uri));
         console.log(`✨ [New Pool Arrived] ${freshTracks.length} unique tracks added to queue.`);
 
@@ -801,8 +822,17 @@ export default function RadioPlayer() {
       const savedToken = getStoredAccessToken() || token;
       if (!savedToken) return;
 
-      // ヘルパー: Spotify キューに追加
+      // 全既聴 URI セット (永続 + セッション + キュー済み) を統合
+      const allPlayedUris = new Set([
+        ...getPersistentPlayedUris(),
+        ...Array.from(playedHistoryRef.current),
+        ...Array.from(queuedUrisSetRef.current),
+      ]);
+
+      // ヘルパー: Spotify キューに追加 (全既聴チェック付き)
       const addToSpotifyQueue = async (trackUri: string) => {
+        // 全既聴 URI セットでチェック：既に再生履歴がある曲はキューに入れない
+        if (allPlayedUris.has(trackUri)) return false;
         try {
           const res = await fetchWithAuth(
             `https://api.spotify.com/v1/me/player/queue?uri=${encodeURIComponent(trackUri)}&device_id=${currentDeviceId}`,
@@ -810,6 +840,7 @@ export default function RadioPlayer() {
           );
           if (res.ok) {
             console.log(`📻 [Queue Added]: ${trackUri}`);
+            queuedUrisSetRef.current.add(trackUri);
             return true;
           }
         } catch (err) {
@@ -819,19 +850,35 @@ export default function RadioPlayer() {
       };
 
       // --- Dynamic Shuffle: アプリ側のキューの維持・補充 (目標: 常時 8曲キープ) ---
-      let currentUpcomingUris = [...upcomingUris];
+      let currentUpcomingUris = [...upcomingUris].filter((uri) => !allPlayedUris.has(uri));
 
       if (currentUpcomingUris.length < 5) {
-        console.log(`📻 [Dynamic Shuffle] Upcoming queue is low (${currentUpcomingUris.length} tracks). Refilling...`);
-        const { pool: newPool } = await fetch30_35_35TrackPool(
-          savedToken,
-          Array.from(queuedUrisSetRef.current)
-        );
-        const shuffledNewUris = shuffleArray(newPool.map((t) => t.uri));
-        currentUpcomingUris = [...currentUpcomingUris, ...shuffledNewUris];
+        console.log(`📻 [Dynamic Shuffle] Upcoming queue low (${currentUpcomingUris.length}). Fetching fresh tracks...`);
+
+        // /api/radio からフレッシュな曲を取得（ユーザートークン付き）
+        const userToken = savedToken;
+        const excludedParam = Array.from(allPlayedUris).slice(0, 200).join(',');
+        const hour = new Date().getHours();
+        try {
+          const apiRes = await fetch(
+            `/api/radio?t=${Date.now()}&hour=${hour}&userToken=${encodeURIComponent(userToken)}&excludedUris=${encodeURIComponent(excludedParam)}`
+          );
+          if (apiRes.ok) {
+            const data = await apiRes.json();
+            const freshUris = (data.tracks || [])
+              .map((t: any) => t.uri)
+              .filter((uri: string) => uri && !allPlayedUris.has(uri));
+            currentUpcomingUris = [...currentUpcomingUris, ...freshUris];
+          }
+        } catch (e) {
+          console.error("Failed to fetch fresh tracks for queue:", e);
+          // フォールバック: trackPool から残りを使用
+          const poolUris = trackPool.map((t) => t.uri).filter((uri) => !allPlayedUris.has(uri));
+          currentUpcomingUris = [...currentUpcomingUris, ...poolUris];
+        }
       }
 
-      // Fisher-Yates アルゴリズムでアプリ側のキュー全体を動的にシャッフル
+      // シャッフルしてアプリ側キューを更新
       currentUpcomingUris = shuffleArray(currentUpcomingUris);
       setUpcomingUris(currentUpcomingUris);
 
@@ -839,15 +886,8 @@ export default function RadioPlayer() {
       let addedCount = 0;
       for (const uri of currentUpcomingUris) {
         if (addedCount >= 3) break;
-
-        // すでにキューに入れた曲はスキップ
-        if (queuedUrisSetRef.current.has(uri)) continue;
-
         const success = await addToSpotifyQueue(uri);
-        if (success) {
-          queuedUrisSetRef.current.add(uri);
-          addedCount++;
-        }
+        if (success) addedCount++;
       }
     } catch (err) {
       console.error("Error maintaining upcoming queue:", err);
