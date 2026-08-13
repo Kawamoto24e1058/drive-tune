@@ -505,30 +505,23 @@ const fetchNextTrackOnTheFly = async (): Promise<TrackItem | null> => {
   return null;
 };
 
-// 📻 2. チャート連動 80:20 エラーフリー選曲プール生成エンジン (fetchTimeAdaptiveRadioPool)
+// 📻 2. 動的マイニング連動 85:15 エラーフリー選曲プール生成エンジン (fetchTimeAdaptiveRadioPool)
 const fetchTimeAdaptiveRadioPool = async (
   _token?: string,
   currentSessionUris: string[] = []
 ): Promise<{ pool: TrackItem[]; timeLabel: string }> => {
   try {
-    const hour = new Date().getHours();
     const persistentHistory = getPersistentPlayedUris();
     const usedUris = new Set<string>([...persistentHistory, ...currentSessionUris]);
 
-    let timeLabel = "Drive Tune Radio 📻";
-    if (hour >= 5 && hour < 10) timeLabel = "Morning Drive 🌅";
-    else if (hour >= 10 && hour < 17) timeLabel = "Daytime Highway ☀️";
-    else if (hour >= 17 && hour < 22) timeLabel = "Sunset Twilight 🌆";
-    else timeLabel = "Midnight Cruise 🌙";
-
-    // 🌟 1. サーバーAPI (/api/radio) から世間の最新ヒットチャート曲を大量取得 (80%)
-    let chartTracks: TrackItem[] = [];
+    // 🌟 1. サーバーAPI (/api/radio) から動的マイニングされた最新チャート曲を大量取得 (12〜15曲)
+    let freshChartTracks: TrackItem[] = [];
     try {
-      const apiRes = await fetch(`/api/radio?hour=${hour}`);
+      const apiRes = await fetch(`/api/radio?t=${Date.now()}`); // キャッシュ回避
       if (apiRes.ok) {
         const data = await apiRes.json();
         if (data.tracks && Array.isArray(data.tracks)) {
-          chartTracks = data.tracks
+          freshChartTracks = data.tracks
             .filter((t: TrackItem) => !usedUris.has(t.uri))
             .map((t: any) => ({
               uri: t.uri,
@@ -539,13 +532,13 @@ const fetchTimeAdaptiveRadioPool = async (
         }
       }
     } catch (e) {
-      console.error("Failed to fetch chart tracks from API:", e);
+      console.error("Failed to fetch fresh chart tracks from API:", e);
     }
 
-    // 🌟 2. 自分の過去の再生履歴からは「最大 2曲」だけに厳密制限！ (20%)
+    // 🌟 2. 自分の過去の再生履歴からは「最大 2曲」だけに厳密制限！ (15%)
     let rawUserTracks: any[] = [];
     const userRes = await fetchWithAuth(
-      "https://api.spotify.com/v1/me/top/tracks?time_range=medium_term&limit=10"
+      "https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=10"
     );
     if (userRes.ok) {
       const data = await userRes.json();
@@ -566,19 +559,19 @@ const fetchTimeAdaptiveRadioPool = async (
       }
     }
 
-    // 3. 世間のヒット曲 (8〜10曲) ＋ 自分の曲 (2曲) を合体
-    const finalPool = shuffleArray([...chartTracks, ...userPersonalTracks]);
+    // 3. 動的ヒット曲(12〜15曲) ＋ 自分の曲(2曲) を合体してシャッフル
+    const finalPool = shuffleArray([...freshChartTracks, ...userPersonalTracks]);
 
     console.log(
-      `🌐 [Chart-First Radio Pool] Total: ${finalPool.length} (LatestChartHits: ${chartTracks.length}, UserPersonal: ${userPersonalTracks.length})`
+      `🌐 [Dynamic Chart Radio Pool] Total: ${finalPool.length} (FreshChartHits: ${freshChartTracks.length}, UserPersonal: ${userPersonalTracks.length})`
     );
 
     return {
       pool: finalPool.length > 0 ? finalPool : SEED_LIBRARY,
-      timeLabel,
+      timeLabel: "Drive Tune Radio 📻",
     };
   } catch (err) {
-    console.error("Critical error in chart radio pool builder:", err);
+    console.error("Critical error in dynamic chart radio pool builder:", err);
     return { pool: SEED_LIBRARY, timeLabel: "Drive Tune Radio 📻" };
   }
 };

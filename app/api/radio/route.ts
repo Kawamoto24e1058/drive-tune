@@ -1,19 +1,5 @@
 import { NextResponse } from 'next/server';
 
-// Spotify公式の日本ヒットチャート＆定番プレイリストID
-const SPOTIFY_OFFICIAL_PLAYLISTS = {
-  latestHits: [
-    '37i9dQZF1DXa21B33iL212', // J-Pop Hits
-    '37i9dQZEVXbKX3133A1L12', // Top 50 - Japan
-    '37i9dQZF1DX9qA1L2123i1', // Hot Hits Japan
-  ],
-  eraHits: [
-    '37i9dQZF1DX83eO2B1L212', // 2010s J-Pop Hits
-    '37i9dQZF1DXdbkL2123i12', // 2000s J-Pop Hits
-    '37i9dQZF1DX39m2123i123', // 平成ヒッツ
-  ],
-};
-
 const FALLBACK_HITS = [
   { uri: 'spotify:track:6EzZn96uOc9JsVGNRpx06n', name: '怪獣の花唄', artist: 'Vaundy', coverUrl: 'https://i.scdn.co/image/ab67616d0000b273413554ee5b660c6d71b3e8ec' },
   { uri: 'spotify:track:7y6HOcbQ80bsOsq1GahaVP', name: 'ミックスナッツ', artist: 'Official髭男dism', coverUrl: 'https://i.scdn.co/image/ab67616d0000b273b1ff088f11559868778a87b5' },
@@ -30,7 +16,7 @@ async function getClientCredentialsToken() {
   const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
-    console.warn('⚠️ SPOTIFY_CLIENT_SECRET missing. Using fallback chart tracks.');
+    console.warn('⚠️ SPOTIFY_CLIENT_SECRET is missing. Using fallback chart tracks.');
     return null;
   }
 
@@ -49,45 +35,70 @@ async function getClientCredentialsToken() {
     const data = await res.json();
     return data.access_token || null;
   } catch (e) {
-    console.error('Client Credentials error:', e);
+    console.error('Client credentials error:', e);
     return null;
   }
 }
 
-export async function GET(request: Request) {
+export async function GET(_request: Request) {
   try {
     const token = await getClientCredentialsToken();
-    const { searchParams } = new URL(request.url);
-    const hour = parseInt(searchParams.get('hour') || new Date().getHours().toString(), 10);
 
     if (!token) {
-      const selected = [...FALLBACK_HITS].sort(() => Math.random() - 0.5).slice(0, 8);
+      const selected = [...FALLBACK_HITS].sort(() => Math.random() - 0.5).slice(0, 15);
       return NextResponse.json({ tracks: selected });
     }
 
-    // 時間帯に応じて最新ヒットと年代ヒットの比率を調整
-    const playlistPool = [...SPOTIFY_OFFICIAL_PLAYLISTS.latestHits, ...SPOTIFY_OFFICIAL_PLAYLISTS.eraHits];
-    const targetPlaylistId = playlistPool[Math.floor(Math.random() * playlistPool.length)];
+    // 🌟 1. Spotify 日本公式の「Featured Playlists (注目の最新プレイリスト)」と「J-POP カテゴリ」を動的検索
+    const [featuredRes, jpopRes] = await Promise.all([
+      fetch('https://api.spotify.com/v1/browse/featured-playlists?country=JP&limit=10', {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
+      }),
+      fetch('https://api.spotify.com/v1/browse/categories/0JQ5DAqbMKFEZ332ch2S4B/playlists?country=JP&limit=10', {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
+      }),
+    ]);
 
-    // Spotify公式プレイリストからトラック一覧を取得
-    const res = await fetch(`https://api.spotify.com/v1/playlists/${targetPlaylistId}/tracks?limit=50`, {
+    let playlistIds: string[] = [];
+
+    if (featuredRes.ok) {
+      const data = await featuredRes.json();
+      const items = data.playlists?.items || [];
+      items.forEach((p: any) => { if (p?.id) playlistIds.push(p.id); });
+    }
+
+    if (jpopRes.ok) {
+      const data = await jpopRes.json();
+      const items = data.playlists?.items || [];
+      items.forEach((p: any) => { if (p?.id) playlistIds.push(p.id); });
+    }
+
+    if (playlistIds.length === 0) {
+      const selected = [...FALLBACK_HITS].sort(() => Math.random() - 0.5).slice(0, 15);
+      return NextResponse.json({ tracks: selected });
+    }
+
+    // 🌟 2. ランダムに選んだ最新ヒットプレイリストから曲一覧をマイニング
+    const selectedPlaylistId = playlistIds[Math.floor(Math.random() * playlistIds.length)];
+    const tracksRes = await fetch(`https://api.spotify.com/v1/playlists/${selectedPlaylistId}/tracks?limit=50&market=JP`, {
       headers: { Authorization: `Bearer ${token}` },
       cache: 'no-store',
     });
 
-    if (!res.ok) {
-      console.warn(`Playlist fetch failed: ${res.status}`);
-      const selected = [...FALLBACK_HITS].sort(() => Math.random() - 0.5).slice(0, 8);
+    if (!tracksRes.ok) {
+      const selected = [...FALLBACK_HITS].sort(() => Math.random() - 0.5).slice(0, 15);
       return NextResponse.json({ tracks: selected });
     }
 
-    const data = await res.json();
-    const items = data.items || [];
+    const tracksData = await tracksRes.json();
+    const rawItems = tracksData.items || [];
 
-    // トラック整形
-    const tracks = items
+    // 🌟 3. 有名度 (popularity > 30) の最新・流行曲だけを整形して抽出
+    const extractedTracks = rawItems
       .map((item: any) => item.track)
-      .filter((t: any) => t && t.uri && (t.popularity === undefined || t.popularity > 40))
+      .filter((t: any) => t && t.uri && (t.popularity === undefined || t.popularity > 30))
       .map((t: any) => ({
         uri: t.uri,
         name: t.name,
@@ -95,19 +106,19 @@ export async function GET(request: Request) {
         coverUrl: t.album?.images?.[0]?.url || '',
       }));
 
-    // ランダムに 8 曲選出して返す
-    let selected = tracks.sort(() => Math.random() - 0.5).slice(0, 8);
+    // ランダムに 15 曲選出して返す
+    let selected = extractedTracks.sort(() => Math.random() - 0.5).slice(0, 15);
 
     if (selected.length === 0) {
-      selected = [...FALLBACK_HITS].sort(() => Math.random() - 0.5).slice(0, 8);
+      selected = [...FALLBACK_HITS].sort(() => Math.random() - 0.5).slice(0, 15);
     }
 
-    console.log(`📻 [/api/radio] Extracted ${selected.length} chart tracks from playlist: ${targetPlaylistId}`);
+    console.log(`📻 [/api/radio] Dynamically mined ${selected.length} fresh chart tracks from playlist: ${selectedPlaylistId}`);
 
     return NextResponse.json({ tracks: selected });
   } catch (error: any) {
-    console.error('Radio Chart API Error:', error);
-    const selected = [...FALLBACK_HITS].sort(() => Math.random() - 0.5).slice(0, 8);
+    console.error('Radio Dynamic Chart API Error:', error);
+    const selected = [...FALLBACK_HITS].sort(() => Math.random() - 0.5).slice(0, 15);
     return NextResponse.json({ tracks: selected });
   }
 }
