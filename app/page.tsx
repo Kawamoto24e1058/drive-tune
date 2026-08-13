@@ -482,46 +482,30 @@ const FAMOUS_ERA_ARTISTS = [
   "サザンオールスターズ", "山下達郎", "竹内まりや", "椎名林檎",
 ];
 
-// 時間帯別・有名ヒット曲＆大合唱曲データベース
-const TIME_BASED_TRACK_DATABASE = {
-  morning: [
-    { uri: "spotify:track:0VjIjW4GlUZAMYd2vXMi3b", name: "新宝島", artist: "サカナクション" },
-    { uri: "spotify:track:37IPQgBkvbmH9JR5mlY6a8", name: "ハルジオン", artist: "YOASOBI" },
-    { uri: "spotify:track:364w0q0J0G13g7R7Y8x6Wb", name: "青と夏", artist: "Mrs. GREEN APPLE" },
-    { uri: "spotify:track:4saklk6nie3yiGePpBwUoc", name: "感電", artist: "米津玄師" },
-    { uri: "spotify:track:2Gmyw5Vg2X5YW2lM3OC7nD", name: "マリーゴールド", artist: "あいみょん" },
-    { uri: "spotify:track:18nkY3pJTub8WwEGiQAGh4", name: "高嶺の花子さん", artist: "back number" },
-  ],
-  daytime: [
-    { uri: "spotify:track:6EzZn96uOc9JsVGNRpx06n", name: "怪獣の花唄", artist: "Vaundy" },
-    { uri: "spotify:track:7y6HOcbQ80bsOsq1GahaVP", name: "ミックスナッツ", artist: "Official髭男dism" },
-    { uri: "spotify:track:0qHT5elQ5RNmTA7oDKgb1m", name: "一途", artist: "King Gnu" },
-    { uri: "spotify:track:3XNnq2oo1zmHDseKZKaYEF", name: "前前前世", artist: "RADWIMPS" },
-    { uri: "spotify:track:59h6J25QnnT8xshPTFLkpe", name: "完全感覚Dreamer", artist: "ONE OK ROCK" },
-    { uri: "spotify:track:4Di3ueaCyC0BThjixO0Uzq", name: "シュガーソングとビターステップ", artist: "UNISON SQUARE GARDEN" },
-    { uri: "spotify:track:2ntXQnx4ZUraj1u5Hwqjem", name: "天体観測", artist: "BUMP OF CHICKEN" },
-  ],
-  evening: [
-    { uri: "spotify:track:7pk2Mx1LnlaEpxfzNhgRuz", name: "丸ノ内サディスティック", artist: "椎名林檎" },
-    { uri: "spotify:track:3khEEPRyBeOUabbmOPJzAG", name: "Pretender", artist: "Official髭男dism" },
-    { uri: "spotify:track:6FhWelfRDMFZRtFUU6SIdC", name: "踊り子", artist: "Vaundy" },
-    { uri: "spotify:track:5oG8Ewk6dqsroYdmNFO7nu", name: "きらり", artist: "藤井 風" },
-    { uri: "spotify:track:1jgHrhblhrm0ALKoceU4aj", name: "プラスティック・ラブ", artist: "竹内まりや" },
-    { uri: "spotify:track:08sjU4Uck88xYCQA3ncPS5", name: "RIDE ON TIME", artist: "山下達郎" },
-  ],
-  midnight: [
-    // 🌟 夜の熱唱アンセム（アップテンポ＆重厚感）＋ ミッドナイト・グルーヴ
-    { uri: "spotify:track:6JmTrd6VvMOWZFBk439e28", name: "SPECIALZ", artist: "King Gnu" },
-    { uri: "spotify:track:7jgqNMnqAT9FghC1uSYTFF", name: "KICK BACK", artist: "米津玄師" },
-    { uri: "spotify:track:4cPwi7lcWxRQNEb4xC77fC", name: "新時代", artist: "Ado" },
-    { uri: "spotify:track:2wsyebeX4ptSxKIpJtWE6B", name: "逆光", artist: "Ado" },
-    { uri: "spotify:track:0b9L8PzGzXJ1W0S1sX7Z8a", name: "群青", artist: "YOASOBI" },
-    { uri: "spotify:track:3huSUfmhUr4entz2S0G31O", name: "クロノスタシス", artist: "BUMP OF CHICKEN" },
-    { uri: "spotify:track:7ugSlmtBWNMAgTpdvBPcIh", name: "エイリアンズ", artist: "キリンジ" },
-  ],
+// 内部 API (/api/radio) からその瞬間の曲を1曲取得
+const fetchNextTrackOnTheFly = async (): Promise<TrackItem | null> => {
+  try {
+    const currentHour = new Date().getHours();
+    const res = await fetch(`/api/radio?hour=${currentHour}`);
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    if (data.tracks && data.tracks.length > 0) {
+      const item = data.tracks[0];
+      return {
+        uri: item.uri,
+        name: item.name,
+        artist: item.artist,
+        coverUrl: item.coverUrl || FALLBACK_COVER_URL,
+      };
+    }
+  } catch (e) {
+    console.error("Failed to fetch track from internal API:", e);
+  }
+  return null;
 };
 
-// 📻 2. 100% エラーフリー・選曲プール生成エンジン (fetchTimeAdaptiveRadioPool)
+// 📻 2. 内部 API (/api/radio) 連携 ✕ 100% エラーフリー・動的選曲プール生成エンジン
 const fetchTimeAdaptiveRadioPool = async (
   _token?: string,
   currentSessionUris: string[] = []
@@ -530,46 +514,33 @@ const fetchTimeAdaptiveRadioPool = async (
     const hour = new Date().getHours();
     const persistentHistory = getPersistentPlayedUris();
     const usedUris = new Set<string>([...persistentHistory, ...currentSessionUris]);
-    const artistCountMap = new Map<string, number>();
 
-    // 1. 時間帯判定とデータベースの選出
-    let timeKey: "morning" | "daytime" | "evening" | "midnight" = "daytime";
+    // 1. 時間帯判定とラジオ表示ラベルの選出
     let timeLabel = "Daytime Highway ☀️";
+    if (hour >= 5 && hour < 10) timeLabel = "Morning Drive 🌅";
+    else if (hour >= 10 && hour < 17) timeLabel = "Daytime Highway ☀️";
+    else if (hour >= 17 && hour < 22) timeLabel = "Sunset Twilight 🌆";
+    else timeLabel = "Midnight Cruise 🌙";
 
-    if (hour >= 5 && hour < 10) {
-      timeKey = "morning";
-      timeLabel = "Morning Drive 🌅";
-    } else if (hour >= 10 && hour < 17) {
-      timeKey = "daytime";
-      timeLabel = "Daytime Highway ☀️";
-    } else if (hour >= 17 && hour < 22) {
-      timeKey = "evening";
-      timeLabel = "Sunset Twilight 🌆";
-    } else {
-      timeKey = "midnight";
-      timeLabel = "Midnight Cruise 🌙";
-    }
+    console.log(`📻 [On-The-Fly Radio Engine] Active Time Slot: ${timeLabel}`);
 
-    console.log(`📻 [Database Radio Engine] Active Time Slot: ${timeLabel}`);
+    // 2. サーバーサイド API Route (/api/radio) からリアルタイム取得
+    const apiRes = await fetch(`/api/radio?hour=${hour}`);
+    let apiTracks: TrackItem[] = [];
 
-    // 2. データベースから時間帯マッチ曲を取得 (約 70% ➔ 16曲)
-    const famousDbTracks = TIME_BASED_TRACK_DATABASE[timeKey] || TIME_BASED_TRACK_DATABASE.daytime;
-    const selectedFamous: TrackItem[] = [];
-
-    for (const item of shuffleArray(famousDbTracks)) {
-      if (selectedFamous.length >= 16) break;
-      if (!usedUris.has(item.uri)) {
-        usedUris.add(item.uri);
-        selectedFamous.push({
-          uri: item.uri,
-          name: item.name,
-          artist: item.artist,
-          coverUrl: FALLBACK_COVER_URL, // プレイヤー再生時に自動補完
-        });
+    if (apiRes.ok) {
+      const data = await apiRes.json();
+      if (data.tracks && Array.isArray(data.tracks)) {
+        apiTracks = data.tracks.map((t: any) => ({
+          uri: t.uri,
+          name: t.name,
+          artist: t.artist,
+          coverUrl: t.coverUrl || FALLBACK_COVER_URL,
+        }));
       }
     }
 
-    // 3. ユーザーの愛聴曲・過去曲を取得 (約 30% ➔ 8曲)
+    // 3. ユーザーの愛聴曲・過去曲をバックアップ取得
     let rawUserTracks: any[] = [];
     const [longTopRes, savedRes] = await Promise.all([
       fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=20"),
@@ -586,38 +557,26 @@ const fetchTimeAdaptiveRadioPool = async (
     for (const t of shuffleArray(rawUserTracks)) {
       if (selectedUser.length >= 8) break;
       if (t && t.uri && !usedUris.has(t.uri)) {
-        const mainArtist = t.artists?.[0];
-        const artistId = mainArtist?.id || mainArtist?.name || "unknown";
-        const currentCount = artistCountMap.get(artistId) || 0;
-
-        if (currentCount < 2) {
-          usedUris.add(t.uri);
-          artistCountMap.set(artistId, currentCount + 1);
-          selectedUser.push({
-            uri: t.uri,
-            name: t.name,
-            artist: t.artists ? t.artists.map((a: any) => a.name).join(", ") : "Unknown Artist",
-            artistId: mainArtist?.id,
-            coverUrl: t.album?.images?.[0]?.url || FALLBACK_COVER_URL,
-            popularity: t.popularity ?? 50,
-          });
-        }
+        usedUris.add(t.uri);
+        selectedUser.push({
+          uri: t.uri,
+          name: t.name,
+          artist: t.artists ? t.artists.map((a: any) => a.name).join(", ") : "Unknown Artist",
+          coverUrl: t.album?.images?.[0]?.url || FALLBACK_COVER_URL,
+        });
       }
     }
 
-    // 4. 有名ヒット曲(16曲) ＋ ユーザー曲(8曲) を統合してシャッフル
-    const finalPool = shuffleArray([...selectedFamous, ...selectedUser]);
+    const finalPool = shuffleArray([...apiTracks, ...selectedUser]);
 
-    console.log(
-      `🌐 [Database Radio Pool Built] Total: ${finalPool.length} (FamousDB: ${selectedFamous.length}, UserPersonal: ${selectedUser.length}) for ${timeLabel}`
-    );
+    console.log(`🌐 [On-The-Fly Pool Built] Total: ${finalPool.length} (API: ${apiTracks.length}, User: ${selectedUser.length})`);
 
     return {
-      pool: finalPool.length > 0 ? finalPool : (selectedFamous.length > 0 ? selectedFamous : SEED_LIBRARY),
+      pool: finalPool.length > 0 ? finalPool : SEED_LIBRARY,
       timeLabel,
     };
   } catch (err) {
-    console.error("Critical error in database radio pool builder:", err);
+    console.error("Critical error in radio pool builder:", err);
     return { pool: SEED_LIBRARY, timeLabel: "Drive Tune Radio 📻" };
   }
 };
