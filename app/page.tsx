@@ -505,7 +505,7 @@ const fetchNextTrackOnTheFly = async (): Promise<TrackItem | null> => {
   return null;
 };
 
-// 📻 2. 内部 API (/api/radio) 連携 ✕ 100% エラーフリー・動的選曲プール生成エンジン
+// 📻 2. チャート連動 80:20 エラーフリー選曲プール生成エンジン (fetchTimeAdaptiveRadioPool)
 const fetchTimeAdaptiveRadioPool = async (
   _token?: string,
   currentSessionUris: string[] = []
@@ -515,50 +515,49 @@ const fetchTimeAdaptiveRadioPool = async (
     const persistentHistory = getPersistentPlayedUris();
     const usedUris = new Set<string>([...persistentHistory, ...currentSessionUris]);
 
-    // 1. 時間帯判定とラジオ表示ラベルの選出
-    let timeLabel = "Daytime Highway ☀️";
+    let timeLabel = "Drive Tune Radio 📻";
     if (hour >= 5 && hour < 10) timeLabel = "Morning Drive 🌅";
     else if (hour >= 10 && hour < 17) timeLabel = "Daytime Highway ☀️";
     else if (hour >= 17 && hour < 22) timeLabel = "Sunset Twilight 🌆";
     else timeLabel = "Midnight Cruise 🌙";
 
-    console.log(`📻 [On-The-Fly Radio Engine] Active Time Slot: ${timeLabel}`);
-
-    // 2. サーバーサイド API Route (/api/radio) からリアルタイム取得
-    const apiRes = await fetch(`/api/radio?hour=${hour}`);
-    let apiTracks: TrackItem[] = [];
-
-    if (apiRes.ok) {
-      const data = await apiRes.json();
-      if (data.tracks && Array.isArray(data.tracks)) {
-        apiTracks = data.tracks.map((t: any) => ({
-          uri: t.uri,
-          name: t.name,
-          artist: t.artist,
-          coverUrl: t.coverUrl || FALLBACK_COVER_URL,
-        }));
+    // 🌟 1. サーバーAPI (/api/radio) から世間の最新ヒットチャート曲を大量取得 (80%)
+    let chartTracks: TrackItem[] = [];
+    try {
+      const apiRes = await fetch(`/api/radio?hour=${hour}`);
+      if (apiRes.ok) {
+        const data = await apiRes.json();
+        if (data.tracks && Array.isArray(data.tracks)) {
+          chartTracks = data.tracks
+            .filter((t: TrackItem) => !usedUris.has(t.uri))
+            .map((t: any) => ({
+              uri: t.uri,
+              name: t.name,
+              artist: t.artist,
+              coverUrl: t.coverUrl || FALLBACK_COVER_URL,
+            }));
+        }
       }
+    } catch (e) {
+      console.error("Failed to fetch chart tracks from API:", e);
     }
 
-    // 3. ユーザーの愛聴曲・過去曲をバックアップ取得
+    // 🌟 2. 自分の過去の再生履歴からは「最大 2曲」だけに厳密制限！ (20%)
     let rawUserTracks: any[] = [];
-    const [longTopRes, savedRes] = await Promise.all([
-      fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=20"),
-      fetchWithAuth("https://api.spotify.com/v1/me/tracks?limit=20"),
-    ]);
-
-    if (longTopRes.ok) rawUserTracks.push(...((await longTopRes.json()).items || []));
-    if (savedRes.ok) {
-      const savedData = await savedRes.json();
-      if (savedData.items) rawUserTracks.push(...savedData.items.map((i: any) => i.track));
+    const userRes = await fetchWithAuth(
+      "https://api.spotify.com/v1/me/top/tracks?time_range=medium_term&limit=10"
+    );
+    if (userRes.ok) {
+      const data = await userRes.json();
+      if (data.items) rawUserTracks = data.items;
     }
 
-    const selectedUser: TrackItem[] = [];
+    const userPersonalTracks: TrackItem[] = [];
     for (const t of shuffleArray(rawUserTracks)) {
-      if (selectedUser.length >= 8) break;
+      if (userPersonalTracks.length >= 2) break; // 🔥 自分曲は最大2曲まで
       if (t && t.uri && !usedUris.has(t.uri)) {
         usedUris.add(t.uri);
-        selectedUser.push({
+        userPersonalTracks.push({
           uri: t.uri,
           name: t.name,
           artist: t.artists ? t.artists.map((a: any) => a.name).join(", ") : "Unknown Artist",
@@ -567,16 +566,19 @@ const fetchTimeAdaptiveRadioPool = async (
       }
     }
 
-    const finalPool = shuffleArray([...apiTracks, ...selectedUser]);
+    // 3. 世間のヒット曲 (8〜10曲) ＋ 自分の曲 (2曲) を合体
+    const finalPool = shuffleArray([...chartTracks, ...userPersonalTracks]);
 
-    console.log(`🌐 [On-The-Fly Pool Built] Total: ${finalPool.length} (API: ${apiTracks.length}, User: ${selectedUser.length})`);
+    console.log(
+      `🌐 [Chart-First Radio Pool] Total: ${finalPool.length} (LatestChartHits: ${chartTracks.length}, UserPersonal: ${userPersonalTracks.length})`
+    );
 
     return {
       pool: finalPool.length > 0 ? finalPool : SEED_LIBRARY,
       timeLabel,
     };
   } catch (err) {
-    console.error("Critical error in radio pool builder:", err);
+    console.error("Critical error in chart radio pool builder:", err);
     return { pool: SEED_LIBRARY, timeLabel: "Drive Tune Radio 📻" };
   }
 };
