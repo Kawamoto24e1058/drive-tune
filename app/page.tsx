@@ -663,53 +663,48 @@ export default function RadioPlayer() {
     }
   };
 
-  // 再生指示ハンドラ (デバイス転送 ＆ 403 エラー対策付き)
-  const playTrackOnDevice = async (trackUri: string, targetDeviceId: string) => {
-    if (!targetDeviceId || !trackUri) return;
+  // 再生指示ハンドラ (Content-Type: application/json 修正版)
+  const playTrackOnDevice = async (trackUri: string, deviceId: string) => {
+    if (!deviceId || !trackUri) return;
 
     try {
       const savedToken = getStoredAccessToken() || token || "";
-      await disableSpotifyRepeat(savedToken, targetDeviceId);
+      await disableSpotifyRepeat(savedToken, deviceId);
 
-      // 1. まず該当デバイスに再生フォーカスを転送してアクティブ化
-      try {
-        await fetchWithAuth("https://api.spotify.com/v1/me/player", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            device_ids: [targetDeviceId],
-            play: false,
-          }),
-        });
-      } catch (e) {
-        console.warn("Device transfer warning:", e);
-      }
+      // 1. デバイスにフォーカスを転送してアクティブ化
+      await fetchWithAuth('https://api.spotify.com/v1/me/player', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          device_ids: [deviceId],
+          play: false,
+        }),
+      });
 
-      // 2. 指定トラックの再生リクエストを実行
+      // 2. 指定トラックの再生リクエストを実行 ('application/json' に修正)
       const res = await fetchWithAuth(
-        `https://api.spotify.com/v1/me/player/play?device_id=${targetDeviceId}`,
+        `https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`,
         {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' }, // 🔥 正しい JSON ヘッダー
           body: JSON.stringify({
             uris: [trackUri],
           }),
         }
       );
 
-      if (!res.ok) {
+      if (res.ok) {
+        console.log(`🟢 [Playback Started] Successfully playing: ${trackUri}`);
+      } else {
+        console.warn(`Playback API status: ${res.status}`);
         if (res.status === 403) {
           console.error(
             "❌ [Playback 403 Forbidden] Spotify Premium アカウントであるか、OAuth スコープ (user-modify-playback-state) を確認してください。"
           );
-        } else {
-          console.warn(`Playback failed with status: ${res.status}`);
         }
         if (playerRef.current && typeof playerRef.current.resume === "function") {
           await playerRef.current.resume();
         }
-      } else {
-        console.log(`🟢 [Playback Started] Successfully playing: ${trackUri}`);
       }
     } catch (err) {
       console.error("Failed to trigger play request:", err);
