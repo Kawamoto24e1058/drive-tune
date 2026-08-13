@@ -505,7 +505,7 @@ const fetchNextTrackOnTheFly = async (): Promise<TrackItem | null> => {
   return null;
 };
 
-// 📻 2. サーバーマイニング連動 90:10 選曲プール生成エンジン (fetchTimeAdaptiveRadioPool)
+// 📻 3 レイヤー発見ラジオ: 有名(30%) + 好みベース発見(40%) + 個人(30%)
 const fetchTimeAdaptiveRadioPool = async (
   _token?: string,
   currentSessionUris: string[] = []
@@ -521,21 +521,37 @@ const fetchTimeAdaptiveRadioPool = async (
     else if (hour >= 17 && hour < 22) timeLabel = "Sunset Twilight 🌆";
     else timeLabel = "Midnight Cruise 🌙";
 
-    // 🌟 1. サーバー API (/api/radio) から時間帯マッチのヒット曲・年代名曲を取得
-    // ユーザートークン＋既聴 URI をサーバーに渡してサーバー側でも重複除外
-    let freshChartTracks: TrackItem[] = [];
+    const userToken = typeof window !== 'undefined'
+      ? (localStorage.getItem('drivetune_access_token') || localStorage.getItem('spotify_access_token') || '')
+      : '';
+
+    // 🌟 Layer B 用: ユーザーのトップアーティストを取得（好みの学習）
+    let topArtistNames: string[] = [];
     try {
-      const userToken = typeof window !== 'undefined'
-        ? (localStorage.getItem('drivetune_access_token') || localStorage.getItem('spotify_access_token') || '')
-        : '';
+      // medium_term (過去 6 ヶ月) = 好みの安定した学習に最適
+      const artistRes = await fetchWithAuth(
+        "https://api.spotify.com/v1/me/top/artists?time_range=medium_term&limit=8"
+      );
+      if (artistRes.ok) {
+        const data = await artistRes.json();
+        topArtistNames = (data.items || []).map((a: any) => a.name).filter(Boolean);
+      }
+    } catch (e) {
+      console.error("Failed to fetch top artists:", e);
+    }
+
+    // 🌟 1. サーバー API (/api/radio) に 3 レイヤー発見ロジックを委託
+    let freshTracks: TrackItem[] = [];
+    try {
       const excludedParam = Array.from(usedUris).slice(0, 200).join(',');
+      const topArtistsParam = topArtistNames.slice(0, 5).join(',');
       const apiRes = await fetch(
-        `/api/radio?t=${Date.now()}&hour=${hour}&userToken=${encodeURIComponent(userToken)}&excludedUris=${encodeURIComponent(excludedParam)}`
+        `/api/radio?t=${Date.now()}&hour=${hour}&userToken=${encodeURIComponent(userToken)}&excludedUris=${encodeURIComponent(excludedParam)}&topArtists=${encodeURIComponent(topArtistsParam)}`
       );
       if (apiRes.ok) {
         const data = await apiRes.json();
         if (data.tracks && Array.isArray(data.tracks)) {
-          freshChartTracks = data.tracks
+          freshTracks = data.tracks
             .filter((t: TrackItem) => !usedUris.has(t.uri))
             .map((t: any) => ({
               uri: t.uri,
@@ -544,24 +560,38 @@ const fetchTimeAdaptiveRadioPool = async (
               coverUrl: t.coverUrl || FALLBACK_COVER_URL,
             }));
         }
+        if (data.layers) {
+          console.log(`🎯 [API Layers] Famous:${data.layers.famous} Taste:${data.layers.taste} Discovery:${data.layers.discovery}`);
+        }
       }
     } catch (e) {
       console.error("Failed to fetch fresh tracks from API:", e);
     }
 
-    // 🌟 2. 自分の過去履歴からは「最大 2曲」のみ抽出（アクセント）
+    // 🌟 2. 自分の過去の愛聴曲 30% (最大 6 曲): medium_term + long_term をミックス
     let rawUserTracks: any[] = [];
-    const userRes = await fetchWithAuth(
-      "https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=10"
-    );
-    if (userRes.ok) {
-      const data = await userRes.json();
-      if (data.items) rawUserTracks = data.items;
+    try {
+      const [medRes, longRes] = await Promise.all([
+        fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=medium_term&limit=15"),
+        fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=10"),
+      ]);
+      const medTracks = medRes.ok ? (await medRes.json()).items || [] : [];
+      const longTracks = longRes.ok ? (await longRes.json()).items || [] : [];
+      // ミックス (同じ曲はどちらか 1 回のみ)
+      const seen = new Set<string>();
+      for (const t of [...medTracks, ...longTracks]) {
+        if (t?.uri && !seen.has(t.uri)) {
+          seen.add(t.uri);
+          rawUserTracks.push(t);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to fetch user top tracks:", e);
     }
 
     const userPersonalTracks: TrackItem[] = [];
     for (const t of shuffleArray(rawUserTracks)) {
-      if (userPersonalTracks.length >= 2) break; // 🔥 自分曲は最大2曲まで
+      if (userPersonalTracks.length >= 6) break; // 30% (6/20)
       if (t && t.uri && !usedUris.has(t.uri)) {
         usedUris.add(t.uri);
         userPersonalTracks.push({
@@ -573,11 +603,11 @@ const fetchTimeAdaptiveRadioPool = async (
       }
     }
 
-    // 3. ヒット曲(最大18曲) ＋ 自分の曲(最大2曲) を合体してシャッフル
-    const finalPool = shuffleArray([...freshChartTracks, ...userPersonalTracks]);
+    // 3. 3 レイヤーヒット曲(最大 14 曲) ＋ 個人愛聴曲(最大 6 曲) → シャッフル
+    const finalPool = shuffleArray([...freshTracks, ...userPersonalTracks]);
 
     console.log(
-      `🌐 [Server-Mined Radio Pool] Total: ${finalPool.length} (FreshChartHits: ${freshChartTracks.length}, UserPersonal: ${userPersonalTracks.length}) - ${timeLabel}`
+      `🌐 [Discovery Radio Pool] Total: ${finalPool.length} (ServerMined: ${freshTracks.length}, UserPersonal: ${userPersonalTracks.length}, TopArtists: [${topArtistNames.slice(0, 3).join(', ')}...]) - ${timeLabel}`
     );
 
     return {
@@ -882,10 +912,11 @@ export default function RadioPlayer() {
       currentUpcomingUris = shuffleArray(currentUpcomingUris);
       setUpcomingUris(currentUpcomingUris);
 
-      // --- Pre-loading Queue: Spotify側のキューの事前補充 (目標: Spotify側に常時 3曲待機) ---
+      // --- Pre-loading Queue: Spotify側のキューの事前補充 (1曲のみ: 重複リスク最小化) ---
+      // ※ 3曲先読みすると「スキップ済み曲」がSpotify側に残り重複再生の原因になるため1曲に制限
       let addedCount = 0;
       for (const uri of currentUpcomingUris) {
-        if (addedCount >= 3) break;
+        if (addedCount >= 1) break; // 🔥 1曲のみキューイング
         const success = await addToSpotifyQueue(uri);
         if (success) addedCount++;
       }
