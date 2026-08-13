@@ -505,166 +505,70 @@ const fetchNextTrackOnTheFly = async (): Promise<TrackItem | null> => {
   return null;
 };
 
-// 📻 3 レイヤー発見ラジオ: 有名(30%) + 好みベース発見(40%) + 個人(30%)
+// 📻 時間帯適応 ＆ 固定比率ハイブリッド選曲プール取得
 const fetchTimeAdaptiveRadioPool = async (
   _token?: string,
-  currentSessionUris: string[] = []
+  _customPlayedUris?: string[]
 ): Promise<{ pool: TrackItem[]; timeLabel: string }> => {
   try {
-    const persistentHistory = getPersistentPlayedUris();
-    const usedUris = new Set<string>([...persistentHistory, ...currentSessionUris]);
     const hour = new Date().getHours();
 
-    let timeLabel = "Drive Tune Radio 📻";
-    if (hour >= 5 && hour < 10) timeLabel = "Morning Drive 🌅";
-    else if (hour >= 10 && hour < 17) timeLabel = "Daytime Highway ☀️";
-    else if (hour >= 17 && hour < 22) timeLabel = "Sunset Twilight 🌆";
-    else timeLabel = "Midnight Cruise 🌙";
-
-    const userToken = typeof window !== 'undefined'
-      ? (localStorage.getItem('drivetune_access_token') || localStorage.getItem('spotify_access_token') || '')
-      : '';
-
-    // 🌟 Layer B 用: ユーザーのトップアーティストを取得（好みの学習）
-    let topArtistNames: string[] = [];
+    // ユーザーのお気に入り・トップトラックを取得 (30% 枠用)
+    let userTracks: { name: string; artist: string; uri: string }[] = [];
     try {
-      // medium_term (過去 6 ヶ月) = 好みの安定した学習に最適
-      const artistRes = await fetchWithAuth(
-        "https://api.spotify.com/v1/me/top/artists?time_range=medium_term&limit=8"
-      );
-      if (artistRes.ok) {
-        const data = await artistRes.json();
-        topArtistNames = (data.items || []).map((a: any) => a.name).filter(Boolean);
-      }
-    } catch (e) {
-      console.error("Failed to fetch top artists:", e);
-    }
-
-    // 🌟 1. サーバー API (/api/radio) に 3 レイヤー & Gemini AI DJ 発見ロジックを委託
-    let freshTracks: TrackItem[] = [];
-    try {
-      const excludedUrisList = Array.from(usedUris).slice(0, 200);
-      const apiRes = await fetch('/api/radio', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          hour,
-          userToken,
-          excludedUris: excludedUrisList,
-          topArtists: topArtistNames.slice(0, 8),
-          excludeNames: typeof window !== 'undefined' ? (window as any)._lastPlayedSongLabels || [] : [],
-        }),
-      });
-      if (apiRes.ok) {
-        const data = await apiRes.json();
-        if (data.tracks && Array.isArray(data.tracks)) {
-          freshTracks = data.tracks
-            .filter((t: TrackItem) => !usedUris.has(t.uri))
-            .map((t: any) => ({
-              uri: t.uri,
-              name: t.name,
-              artist: t.artist,
-              coverUrl: t.coverUrl || FALLBACK_COVER_URL,
-            }));
-        }
-        if (data.layers) {
-          console.log(`🎯 [API Layers] Famous:${data.layers.famous} Taste:${data.layers.taste} Discovery:${data.layers.discovery}`);
-        }
-      }
-    } catch (e) {
-      console.error("Failed to fetch fresh tracks from API:", e);
-    }
-
-    // 🌟 2. 自分の過去の愛聴曲 30% (最大 6 曲): medium_term + long_term をミックス
-    let rawUserTracks: any[] = [];
-    try {
-      const [medRes, longRes] = await Promise.all([
-        fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=medium_term&limit=15"),
-        fetchWithAuth("https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=10"),
-      ]);
-      const medTracks = medRes.ok ? (await medRes.json()).items || [] : [];
-      const longTracks = longRes.ok ? (await longRes.json()).items || [] : [];
-      // ミックス (同じ曲はどちらか 1 回のみ)
-      const seen = new Set<string>();
-      for (const t of [...medTracks, ...longTracks]) {
-        if (t?.uri && !seen.has(t.uri)) {
-          seen.add(t.uri);
-          rawUserTracks.push(t);
-        }
-      }
-    } catch (e) {
-      console.error("Failed to fetch user top tracks:", e);
-    }
-
-    const userPersonalTracks: TrackItem[] = [];
-    for (const t of shuffleArray(rawUserTracks)) {
-      if (userPersonalTracks.length >= 6) break; // 30% (6/20)
-      if (t && t.uri && !usedUris.has(t.uri)) {
-        usedUris.add(t.uri);
-        userPersonalTracks.push({
-          uri: t.uri,
+      const topRes = await fetchWithAuth('https://api.spotify.com/v1/me/top/tracks?time_range=medium_term&limit=20');
+      if (topRes.ok) {
+        const topData = await topRes.json();
+        userTracks = (topData.items || []).map((t: any) => ({
           name: t.name,
-          artist: t.artists ? t.artists.map((a: any) => a.name).join(", ") : "Unknown Artist",
-          coverUrl: t.album?.images?.[0]?.url || FALLBACK_COVER_URL,
-        });
+          artist: t.artists?.[0]?.name || '',
+          uri: t.uri,
+        }));
       }
+    } catch (e) {
+      console.warn("Could not fetch user top tracks:", e);
     }
 
-    // 3. 3 レイヤーヒット曲(最大 14 曲) ＋ 個人愛聴曲(最大 6 曲) → シャッフル
-    const finalPool = shuffleArray([...freshTracks, ...userPersonalTracks]);
+    const excludeKeys = typeof window !== 'undefined'
+      ? ((window as any)._lastPlayedKeys || [])
+      : [];
 
-    console.log(
-      `🌐 [Discovery Radio Pool] Total: ${finalPool.length} (ServerMined: ${freshTracks.length}, UserPersonal: ${userPersonalTracks.length}, TopArtists: [${topArtistNames.slice(0, 3).join(', ')}...]) - ${timeLabel}`
-    );
-
-    return {
-      pool: finalPool.length > 0 ? finalPool : SEED_LIBRARY,
-      timeLabel,
-    };
-  } catch (err) {
-    console.error("Critical error in radio pool builder:", err);
-    return { pool: SEED_LIBRARY, timeLabel: "Drive Tune Radio 📻" };
-  }
-};
-
-// AI選曲エンジン API (/api/radio) から選曲プールを取得する関数
-const fetchAiRadioPool = async (customExcludeNames: string[] = []): Promise<{ pool: TrackItem[]; timeLabel: string }> => {
-  try {
-    const hour = new Date().getHours();
-    console.log(`📻 [AI Engine Call] Requesting AI playlist for hour: ${hour}...`);
-
+    // サーバー API に送信
     const res = await fetch('/api/radio', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         hour,
-        excludeNames: customExcludeNames,
+        excludeKeys,
+        userTracks, // ユーザーの個人履歴を渡す
       }),
     });
 
     if (res.ok) {
       const data = await res.json();
-      const tracks: TrackItem[] = (data.tracks || []).map((t: any) => ({
+      const rawTracks = data.tracks || [];
+      const tracks: TrackItem[] = rawTracks.map((t: any) => ({
         uri: t.uri,
         name: t.name,
         artist: t.artist,
         coverUrl: t.coverUrl || FALLBACK_COVER_URL,
       }));
 
-      console.log(`🌐 [AI Pool Built] Received ${tracks.length} AI recommended tracks.`);
+      console.log(`🌐 [Radio Pool Built] Received ${tracks.length} fresh tracks.`);
 
       return {
         pool: tracks.length > 0 ? tracks : SEED_LIBRARY,
-        timeLabel: "Drive Tune AI Radio 📻",
+        timeLabel: "Drive Tune Radio 📻",
       };
     }
   } catch (err) {
-    console.error("Critical error in AI radio pool builder:", err);
+    console.error("Critical error in ratio radio pool builder:", err);
   }
 
-  return { pool: SEED_LIBRARY, timeLabel: "Drive Tune AI Radio 📻" };
+  return { pool: SEED_LIBRARY, timeLabel: "Drive Tune Radio 📻" };
 };
 
+const fetchAiRadioPool = fetchTimeAdaptiveRadioPool;
 const fetchFailSafeRadioPool = fetchTimeAdaptiveRadioPool;
 const fetchBulletproofRadioPool = fetchTimeAdaptiveRadioPool;
 const fetchDirectSearchRadioPool = fetchTimeAdaptiveRadioPool;
